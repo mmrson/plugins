@@ -64,12 +64,49 @@ var AIH = AIH || {};
 
     AIH.Personality = AIH.Personality || {};
 
-    AIH.Personality.VERSION = "0.1.0";
+    AIH.Personality.VERSION = "0.2.0";
 
     AIH.Personality._initialized = false;
 
     // =========================================================================
     // TRAIT DEFINITIONS
+    // =========================================================================
+    //
+    // v0.2.0 adds the "boundary/drift" trait set from the minigame design
+    // pass (Personality Drift RPG handoff): mercy, assertiveness,
+    // inhibition, approvalSeeking, trust, defiance, attentionSeeking.
+    //
+    // These follow the same convention as the original 9: each trait name
+    // names the HIGH pole (1.0 = a lot of that named quality), not a
+    // bipolar pair.
+    //
+    //     mercy             0 = cruel                1 = compassionate
+    //     assertiveness     0 = passive               1 = assertive
+    //     inhibition        0 = uninhibited            1 = reserved/inhibited
+    //     approvalSeeking   0 = self-directed           1 = people-pleasing
+    //     trust             0 = suspicious               1 = trusting
+    //     defiance          0 = submissive to authority    1 = defiant
+    //     attentionSeeking  0 = avoids attention            1 = seeks attention
+    //
+    // IMPORTANT: assertiveness is not expressed independently of
+    // confidence. A heroine can privately want to speak up (high
+    // assertiveness) but not actually do so if her current confidence is
+    // low - she gets talked out of it instead. This module still stores
+    // assertiveness as its own trait (it is not the same thing as
+    // confidence - a confident person is not automatically assertive,
+    // e.g. someone confident but very conflict-avoidant), but any caller
+    // that wants to know how assertively she will actually BEHAVE right
+    // now should use AIH.Personality.getEffectiveAssertiveness() below
+    // rather than reading the raw trait, since that blends the trait with
+    // both her baseline personality confidence and her current momentary
+    // confidence (AIH.Emotions.confidence).
+    //
+    // IMPORTANT: inhibition intentionally does NOT start neutral, the same
+    // way pride/dignity/modesty do not. It starts high, matching her
+    // established identity, and is expected to drift downward over time
+    // through AIH_PersonalityDrift.js rather than through direct edits
+    // here.
+    //
     // =========================================================================
 
     AIH.Personality.TRAITS = [
@@ -82,7 +119,15 @@ var AIH = AIH || {};
         "independence",
         "riskTolerance",
         "sociability",
-        "confidence"
+        "confidence",
+
+        "mercy",
+        "assertiveness",
+        "inhibition",
+        "approvalSeeking",
+        "trust",
+        "defiance",
+        "attentionSeeking"
 
     ];
 
@@ -110,7 +155,21 @@ var AIH = AIH || {};
 
             sociability: 0.55,
 
-            confidence: 0.95
+            confidence: 0.95,
+
+            mercy: 0.65,
+
+            assertiveness: 0.85,
+
+            inhibition: 0.80,
+
+            approvalSeeking: 0.20,
+
+            trust: 0.80,
+
+            defiance: 0.75,
+
+            attentionSeeking: 0.50
 
         };
     };
@@ -300,6 +359,75 @@ var AIH = AIH || {};
 
         return AIH.Personality._copy(
             state.personality
+        );
+    };
+
+    // =========================================================================
+    // EFFECTIVE ASSERTIVENESS
+    // =========================================================================
+    //
+    // Assertiveness is stored as its own trait (wanting to speak up is not
+    // the same thing as being confident), but whether that intention
+    // actually translates into assertive behavior right now depends on
+    // confidence - both her baseline personality confidence and her
+    // current momentary confidence (AIH.Emotions.confidence, if that
+    // module is present). Low confidence means she gets talked out of it
+    // even when the trait itself is high.
+    //
+    // This blends: 60% the raw assertiveness trait, 40% a confidence
+    // factor (itself 60% baseline personality confidence / 40% current
+    // emotional confidence when emotions are available). A caller that
+    // wants to know how assertively she is likely to actually behave right
+    // now should use this instead of the raw trait.
+    //
+    // =========================================================================
+
+    AIH.Personality.getEffectiveAssertiveness = function() {
+
+        var assertiveness;
+        var baselineConfidence;
+        var currentConfidence;
+        var confidenceFactor;
+
+        assertiveness =
+            AIH.Personality.getTrait("assertiveness");
+
+        if (assertiveness === null) {
+            return 0;
+        }
+
+        baselineConfidence =
+            AIH.Personality.getTrait("confidence");
+
+        if (baselineConfidence === null) {
+            baselineConfidence = 0.5;
+        }
+
+        currentConfidence =
+            baselineConfidence;
+
+        if (
+            typeof AIH.Emotions !== "undefined" &&
+            AIH.Emotions.getValue
+        ) {
+
+            currentConfidence =
+                Number(
+                    AIH.Emotions.getValue("confidence")
+                );
+
+            if (isNaN(currentConfidence)) {
+                currentConfidence = baselineConfidence;
+            }
+        }
+
+        confidenceFactor =
+            (baselineConfidence * 0.60) +
+            (currentConfidence * 0.40);
+
+        return AIH.Personality._clamp01(
+            (assertiveness * 0.60) +
+            (confidenceFactor * 0.40)
         );
     };
 
@@ -496,6 +624,10 @@ var AIH = AIH || {};
 
             getTrait: function(name) {
                 return AIH.Personality.getTrait(name);
+            },
+
+            getEffectiveAssertiveness: function() {
+                return AIH.Personality.getEffectiveAssertiveness();
             }
         }
     );

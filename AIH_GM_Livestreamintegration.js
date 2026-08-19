@@ -1,5 +1,5 @@
 /*:
- * @plugindesc AI Hero - Livestream / Personality Integration v1.1.0
+ * @plugindesc AI Hero - Livestream / Personality Integration v1.2.0
  * @author AI Hero Project
  *
  * @help
@@ -23,6 +23,19 @@
  * call back into AIH.Livestream.evaluateRequest() /
  * recordChallengeResult() / recordEffect() automatically when this file is
  * loaded, so the connection now works in both directions.
+ *
+ * v1.2.0: the general-purpose pressure evaluation logic (psychological
+ * cost, survival/reward/emotional/personality/value pressure, and the
+ * resistance/willingness/response formula) has been extracted into
+ * AIH_PressureEvaluator.js so the minigame framework can reuse the same
+ * tested evaluator instead of a second bespoke implementation.
+ * evaluateRequest() now normalizes the request, computes the two pieces
+ * that genuinely are livestream-specific (viewer relationship pressure and
+ * the challenge-penalty/attachment terms), and delegates to
+ * AIH.PressureEvaluator.evaluate(). This was a pure extraction - the
+ * public API and return shape of evaluateRequest() are unchanged.
+ * AIH_PressureEvaluator.js must be loaded for this file to work; if it is
+ * missing, evaluateRequest() returns a safe reject rather than throwing.
  *
  * This plugin does NOT replace the underlying psychology modules.
  *
@@ -131,7 +144,7 @@ var GM = GM || {};
 
     AIH.Livestream = AIH.Livestream || {};
 
-    AIH.Livestream.VERSION = "1.0.0";
+    AIH.Livestream.VERSION = "1.2.0";
     AIH.Livestream.SCHEMA_VERSION = 1;
 
     AIH.Livestream._initialized = false;
@@ -628,470 +641,16 @@ var GM = GM || {};
     // PSYCHOLOGICAL COST
     // =========================================================================
 
-    AIH.Livestream._psychologicalCost =
-        function(request) {
-
-            var personality;
-            var values;
-            var cost;
-
-            personality =
-                AIH.Personality.get();
-
-            values =
-                AIH.Values.get();
-
-            cost = 0;
-
-            /*
-             * Pride is a personality tendency.
-             *
-             * Dignity/modesty are values.
-             */
-            cost +=
-                AIH.Livestream._number(
-                    personality.pride,
-                    0
-                ) *
-                AIH.Livestream._number(
-                    request.prideCost,
-                    0
-                );
-
-            cost +=
-                AIH.Livestream._number(
-                    values.dignity,
-                    0
-                ) *
-                AIH.Livestream._number(
-                    request.dignityCost,
-                    0
-                );
-
-            cost +=
-                AIH.Livestream._number(
-                    values.modesty,
-                    0
-                ) *
-                AIH.Livestream._number(
-                    request.modestyCost,
-                    0
-                );
-
-            cost +=
-                AIH.Livestream._number(
-                    values.freedom,
-                    0
-                ) *
-                AIH.Livestream._number(
-                    request.freedomCost,
-                    0
-                );
-
-            return cost / 4;
-        };
-
-    // =========================================================================
-    // SURVIVAL PRESSURE
-    // =========================================================================
-
-    AIH.Livestream._survivalPressure =
-        function(request) {
-
-            var personality;
-            var values;
-            var emotions;
-            var danger;
-            var pressure;
-
-            personality =
-                AIH.Personality.get();
-
-            values =
-                AIH.Values.get();
-
-            emotions =
-                AIH.Emotions.get();
-
-            danger =
-                AIH.Livestream._clamp01(
-                    request.danger
-                );
-
-            /*
-             * Current fear/stress make danger feel more serious.
-             *
-             * High confidence reduces perceived danger.
-             */
-            pressure =
-                danger;
-
-            pressure *=
-                0.70 +
-                AIH.Livestream._number(
-                    values.survival,
-                    0.5
-                ) *
-                0.50;
-
-            pressure *=
-                0.70 +
-                AIH.Livestream._number(
-                    emotions.fear,
-                    0
-                ) *
-                0.50;
-
-            pressure *=
-                1.00 -
-                (
-                    AIH.Livestream._number(
-                        personality.courage,
-                        0.5
-                    ) *
-                    0.25
-                );
-
-            pressure +=
-                AIH.Livestream._number(
-                    request.survivalBenefit,
-                    0
-                ) *
-                0.50;
-
-            return AIH.Livestream._clamp01(
-                pressure
-            );
-        };
-
-    // =========================================================================
-    // REWARD PRESSURE
-    // =========================================================================
-
-    AIH.Livestream._rewardPressure =
-        function(request) {
-
-            var values;
-            var reward;
-            var normalized;
-
-            values =
-                AIH.Values.get();
-
-            reward =
-                Math.max(
-                    0,
-                    AIH.Livestream._number(
-                        request.reward,
-                        0
-                    )
-                );
-
-            /*
-             * Logarithmic scaling prevents huge donations from becoming
-             * mathematically absurd.
-             */
-            normalized =
-                Math.log(
-                    reward + 1
-                ) /
-                Math.log(
-                    100001
-                );
-
-            normalized =
-                AIH.Livestream._clamp01(
-                    normalized
-                );
-
-            normalized *=
-                0.60 +
-                AIH.Livestream._number(
-                    values.wealth,
-                    0.5
-                ) *
-                0.40;
-
-            normalized +=
-                AIH.Livestream._number(
-                    request.combatAdvantage,
-                    0
-                ) *
-                0.20;
-
-            return AIH.Livestream._clamp01(
-                normalized
-            );
-        };
-
-    // =========================================================================
-    // EMOTIONAL PRESSURE
-    // =========================================================================
-
-    AIH.Livestream._emotionalPressure =
-        function(request) {
-
-            var emotions;
-            var pressure;
-
-            emotions =
-                AIH.Emotions.get();
-
-            pressure = 0;
-
-            /*
-             * Confidence makes difficult challenges feel manageable.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    emotions.confidence,
-                    0.5
-                ) *
-                0.20;
-
-            /*
-             * Fear/stress make dangerous requests harder.
-             */
-            pressure -=
-                AIH.Livestream._number(
-                    emotions.fear,
-                    0
-                ) *
-                0.30;
-
-            pressure -=
-                AIH.Livestream._number(
-                    emotions.stress,
-                    0
-                ) *
-                0.20;
-
-            /*
-             * Embarrassment makes socially exposing requests harder.
-             */
-            pressure -=
-                AIH.Livestream._number(
-                    emotions.embarrassment,
-                    0
-                ) *
-                AIH.Livestream._number(
-                    request.embarrassment,
-                    0
-                ) *
-                0.40;
-
-            /*
-             * Excitement can make unusual/risky requests more appealing.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    emotions.excitement,
-                    0
-                ) *
-                0.15;
-
-            /*
-             * Fatigue reduces willingness to deliberately create additional
-             * difficulty.
-             */
-            pressure -=
-                AIH.Livestream._number(
-                    emotions.fatigue,
-                    0
-                ) *
-                0.15;
-
-            return pressure;
-        };
-
-    // =========================================================================
-    // PERSONALITY PRESSURE
-    // =========================================================================
-
-    AIH.Livestream._personalityPressure =
-        function(request) {
-
-            var personality;
-            var pressure;
-
-            personality =
-                AIH.Personality.get();
-
-            pressure = 0;
-
-            /*
-             * Courage helps with dangerous challenges.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    personality.courage,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.danger,
-                    0
-                ) *
-                0.35;
-
-            /*
-             * Risk tolerance increases willingness to accept risky requests.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    personality.riskTolerance,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.danger,
-                    0
-                ) *
-                0.35;
-
-            /*
-             * Curiosity can make unusual requests interesting.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    personality.curiosity,
-                    0.5
-                ) *
-                0.10;
-
-            /*
-             * Independence makes direct audience control less attractive.
-             */
-            pressure -=
-                AIH.Livestream._number(
-                    personality.independence,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.freedomCost,
-                    0
-                ) *
-                0.35;
-
-            /*
-             * Pride strongly resists humiliating or degrading requests.
-             */
-            pressure -=
-                AIH.Livestream._number(
-                    personality.pride,
-                    0.5
-                ) *
-                (
-                    AIH.Livestream._number(
-                        request.prideCost,
-                        0
-                    ) +
-                    AIH.Livestream._number(
-                        request.dignityCost,
-                        0
-                    )
-                ) *
-                0.45;
-
-            return pressure;
-        };
-
-    // =========================================================================
-    // VALUE PRESSURE
-    // =========================================================================
-
-    AIH.Livestream._valuePressure =
-        function(request) {
-
-            var values;
-            var pressure;
-
-            values =
-                AIH.Values.get();
-
-            pressure = 0;
-
-            /*
-             * Survival benefits are especially important.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    values.survival,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.survivalBenefit,
-                    0
-                ) *
-                0.50;
-
-            /*
-             * Power-oriented characters may accept combat challenges that
-             * prove strength.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    values.power,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.combatAdvantage,
-                    0
-                ) *
-                0.20;
-
-            /*
-             * Status can make audience approval rewarding.
-             */
-            pressure +=
-                AIH.Livestream._number(
-                    values.status,
-                    0.5
-                ) *
-                0.10;
-
-            /*
-             * Freedom strongly resists being ordered around.
-             */
-            pressure -=
-                AIH.Livestream._number(
-                    values.freedom,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.freedomCost,
-                    0
-                ) *
-                0.35;
-
-            /*
-             * Dignity and modesty resist humiliating exposure.
-             */
-            pressure -=
-                AIH.Livestream._number(
-                    values.dignity,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.dignityCost,
-                    0
-                ) *
-                0.40;
-
-            pressure -=
-                AIH.Livestream._number(
-                    values.modesty,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.modestyCost,
-                    0
-                ) *
-                0.30;
-
-            return pressure;
-        };
-
     // =========================================================================
     // VIEWER PRESSURE
+    // =========================================================================
+    //
+    // This stays here rather than in the shared AIH_PressureEvaluator.js
+    // because it depends on AIH.Livestream.getViewerRelationship(), which
+    // is specific to how this integration tracks individual livestream
+    // viewers. It is passed into the shared evaluator as
+    // options.domainPressure.
+    //
     // =========================================================================
 
     AIH.Livestream._viewerPressure =
@@ -1165,29 +724,30 @@ var GM = GM || {};
     //
     // It returns the psychological pressure surrounding the action.
     //
+    // v1.1.0: the actual pressure math (psychological cost, survival,
+    // reward, emotional, personality and value pressure, and the
+    // resistance/willingness/response formula) now lives in the shared
+    // AIH_PressureEvaluator.js, so the same evaluation logic can be reused
+    // by minigames instead of being duplicated per system. This function
+    // is now a thin wrapper: it normalizes the request, computes the
+    // livestream-specific pressure terms (viewer relationship pressure,
+    // the challenge-penalty resistance, and viewer-attachment discount),
+    // and delegates to AIH.PressureEvaluator.evaluate(). The return shape
+    // is unchanged from before this refactor - every field that used to
+    // be here is still here.
+    //
     // =========================================================================
 
     AIH.Livestream.evaluateRequest =
         function(rawRequest) {
 
             var request;
-            var personality;
-            var values;
-            var emotions;
-
-            var survivalPressure;
-            var rewardPressure;
-            var emotionalPressure;
-            var personalityPressure;
-            var valuePressure;
             var viewerPressure;
-
-            var resistance;
-            var willingness;
-            var effectiveThreshold;
-
-            var severityPenalty;
-            var response;
+            var integrationState;
+            var domainResistance;
+            var attachmentDiscount;
+            var relationship;
+            var result;
 
             if (!AIH.Livestream._hasAIH()) {
 
@@ -1199,43 +759,22 @@ var GM = GM || {};
                 };
             }
 
+            if (
+                typeof AIH.PressureEvaluator === "undefined" ||
+                !AIH.PressureEvaluator.evaluate
+            ) {
+
+                return {
+                    response: "reject",
+                    willingness: 0,
+                    resistance: 1,
+                    reason: "Shared pressure evaluator (AIH_PressureEvaluator.js) unavailable."
+                };
+            }
+
             request =
                 AIH.Livestream.normalizeRequest(
                     rawRequest
-                );
-
-            personality =
-                AIH.Personality.get();
-
-            values =
-                AIH.Values.get();
-
-            emotions =
-                AIH.Emotions.get();
-
-            survivalPressure =
-                AIH.Livestream._survivalPressure(
-                    request
-                );
-
-            rewardPressure =
-                AIH.Livestream._rewardPressure(
-                    request
-                );
-
-            emotionalPressure =
-                AIH.Livestream._emotionalPressure(
-                    request
-                );
-
-            personalityPressure =
-                AIH.Livestream._personalityPressure(
-                    request
-                );
-
-            valuePressure =
-                AIH.Livestream._valuePressure(
-                    request
                 );
 
             viewerPressure =
@@ -1243,256 +782,47 @@ var GM = GM || {};
                     request
                 );
 
-            /*
-             * Base resistance.
-             *
-             * Pride, dignity, modesty and freedom contribute heavily.
-             */
-            resistance = 0.35;
-
-            resistance +=
-                AIH.Livestream._number(
-                    personality.pride,
-                    0.5
-                ) *
-                0.20;
-
-            resistance +=
-                AIH.Livestream._number(
-                    values.dignity,
-                    0.5
-                ) *
-                0.20;
-
-            resistance +=
-                AIH.Livestream._number(
-                    values.freedom,
-                    0.5
-                ) *
-                0.15;
-
-            resistance +=
-                AIH.Livestream._number(
-                    values.modesty,
-                    0.5
-                ) *
-                AIH.Livestream._number(
-                    request.modestyCost,
-                    0
-                ) *
-                0.20;
-
-            resistance +=
-                AIH.Livestream._number(
-                    emotions.fear,
-                    0
-                ) *
-                0.10;
-
-            resistance +=
-                AIH.Livestream._number(
-                    emotions.stress,
-                    0
-                ) *
-                0.10;
-
-            /*
-             * Previous challenge failures increase resistance to subsequent
-             * demands.
-             */
-            var integrationState =
+            integrationState =
                 AIH.Livestream._ensure();
 
-            resistance +=
+            domainResistance =
                 AIH.Livestream._clamp01(
                     integrationState.challengePenalty
-                ) *
-                0.25;
+                );
 
-            /*
-             * Severe requests have higher thresholds.
-             */
-            severityPenalty =
-                AIH.Livestream.Config.severityPenalty[
-                    request.severity
-                ];
+            attachmentDiscount = 0;
 
-            if (severityPenalty === undefined) {
-                severityPenalty = 0;
-            }
-
-            resistance += severityPenalty;
-
-            /*
-             * Survival pressure is deliberately powerful.
-             *
-             * This is what allows:
-             *
-             * "I would NEVER normally do this."
-             *
-             * to become:
-             *
-             * "Fine. I need the healing."
-             */
-            willingness = 0;
-
-            willingness +=
-                survivalPressure *
-                AIH.Livestream.Config.survivalWeight;
-
-            willingness +=
-                rewardPressure *
-                AIH.Livestream.Config.rewardWeight;
-
-            willingness +=
-                emotionalPressure *
-                AIH.Livestream.Config.emotionWeight;
-
-            willingness +=
-                personalityPressure *
-                AIH.Livestream.Config.personalityWeight;
-
-            willingness +=
-                valuePressure *
-                AIH.Livestream.Config.valueWeight;
-
-            willingness +=
-                viewerPressure *
-                AIH.Livestream.Config.relationshipWeight;
-
-            /*
-             * Viewer attachment lowers the effective threshold.
-             *
-             * This is the requested "she already knows this fan" mechanic.
-             */
             if (request.viewer) {
 
-                var relationship =
+                relationship =
                     AIH.Livestream.getViewerRelationship(
                         request.viewer
                     );
 
-                effectiveThreshold =
-                    resistance -
-                    (
-                        relationship.favor *
-                        AIH.Livestream.Config.attachmentWeight
-                    );
-
-            } else {
-
-                effectiveThreshold =
-                    resistance;
+                attachmentDiscount =
+                    relationship.favor *
+                    AIH.Livestream.Config.attachmentWeight;
             }
 
-            /*
-             * Normalize willingness into a useful 0..1 range.
-             */
-            willingness =
-                AIH.Livestream._clamp01(
-                    0.50 +
-                    willingness
-                );
-
-            resistance =
-                AIH.Livestream._clamp01(
-                    effectiveThreshold
-                );
-
-            /*
-             * Final response bands.
-             *
-             * This intentionally distinguishes enthusiastic acceptance from
-             * reluctant acceptance.
-             */
-            var score =
-                willingness -
-                resistance;
-
-            if (score >= 0.35) {
-
-                response =
-                    "accept";
-
-            }
-            else if (score >= 0.05) {
-
-                response =
-                    "reluctant_accept";
-
-            }
-            else if (score >= -0.15) {
-
-                response =
-                    "partial";
-
-            }
-            else {
-
-                response =
-                    "reject";
-            }
-
-            return {
-
-                request:
+            result =
+                AIH.PressureEvaluator.evaluate(
                     request,
+                    {
+                        domainPressure: viewerPressure,
+                        domainResistance: domainResistance,
+                        attachmentDiscount: attachmentDiscount
+                    }
+                );
 
-                response:
-                    response,
+            result.request =
+                request;
 
-                willingness:
-                    willingness,
+            result.viewerPressure =
+                viewerPressure;
 
-                resistance:
-                    resistance,
-
-                score:
-                    score,
-
-                survivalPressure:
-                    survivalPressure,
-
-                rewardPressure:
-                    rewardPressure,
-
-                emotionalPressure:
-                    emotionalPressure,
-
-                personalityPressure:
-                    personalityPressure,
-
-                valuePressure:
-                    valuePressure,
-
-                viewerPressure:
-                    viewerPressure,
-
-                currentConfidence:
-                    emotions.confidence,
-
-                currentFear:
-                    emotions.fear,
-
-                currentEmbarrassment:
-                    emotions.embarrassment,
-
-                personalityConfidence:
-                    personality.confidence,
-
-                pride:
-                    personality.pride,
-
-                dignity:
-                    values.dignity,
-
-                modesty:
-                    values.modesty,
-
-                freedom:
-                    values.freedom
-            };
+            return result;
         };
+
 
     // =========================================================================
     // CURRENT AUDIENCE RESISTANCE
