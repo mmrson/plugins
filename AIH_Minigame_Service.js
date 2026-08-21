@@ -69,6 +69,15 @@
  * @type string
  * @default friendly
  *
+ * @command SpawnRegular
+ * @text Spawn Regular
+ * @desc Spawns a named regular customer.
+ *
+ * @arg regularId
+ * @text Regular ID
+ * @type string
+ * @default old_grum
+ *
  * @command TriggerIncident
  * @text Trigger Incident
  * @desc Triggers a named incident, optionally involving a specific customer.
@@ -217,7 +226,7 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
-    // CUSTOMER ARCHETYPES
+    // CUSTOMER ARCHETYPES (for generated/filler customers)
     // =========================================================================
     //
     // A small, representative set rather than one entry per adjective in
@@ -226,10 +235,14 @@ var AIH = AIH || {};
     // flavor text, for example. Add more here as data; do not add new code
     // paths per archetype.
     //
-    // pressureProfile values are BASE pressure contributions this
-    // archetype's requests tend to carry. Actual situations built from
-    // these are further adjusted per-incident (see _buildRequestSituation
-    // below).
+    // Each archetype is a set of RANGES, not fixed values - a spawned
+    // customer randomizes within these, so two "impatient" customers don't
+    // pressure her identically. persistence/publicity/authority are the
+    // original design doc's own pressure vocabulary (see
+    // MINIGAME_HANDOFF.md Section 7's mapping note) and get folded into
+    // embarrassment/dignityCost/prideCost when a situation is built (see
+    // _buildRequestSituation) - do not read them as pre-normalized
+    // situation fields directly.
     //
     // =========================================================================
 
@@ -237,58 +250,133 @@ var AIH = AIH || {};
 
         friendly: {
             names: ["Rowan", "Della", "Tomas"],
+            faction: "Tavern",
             rewardRange: [20, 60],
-            pressureProfile: { embarrassment: 0.05, prideCost: 0.0, freedomCost: 0.05 },
+            persistenceRange: [0.05, 0.25],
+            publicityRange: [0.05, 0.20],
+            authorityRange: [0.0, 0.15],
             incidentWeights: { request_outside_normal_service: 0.5, large_tip: 0.3 }
         },
 
         impatient: {
             names: ["Garrick", "Ossa", "Fenn"],
+            faction: "Tavern",
             rewardRange: [10, 30],
-            pressureProfile: { embarrassment: 0.10, prideCost: 0.15, freedomCost: 0.10 },
+            persistenceRange: [0.35, 0.60],
+            publicityRange: [0.15, 0.35],
+            authorityRange: [0.1, 0.3],
             incidentWeights: { customer_demands_priority: 1.0 }
         },
 
         rude: {
             names: ["Brack", "Ilva"],
+            faction: "Tavern",
             rewardRange: [5, 20],
-            pressureProfile: { embarrassment: 0.25, prideCost: 0.40, dignityCost: 0.30 },
+            persistenceRange: [0.45, 0.75],
+            publicityRange: [0.30, 0.55],
+            authorityRange: [0.1, 0.35],
             incidentWeights: { customer_demands_priority: 0.6, someone_bothering_patron: 0.4 }
         },
 
         drunk: {
             names: ["Old Merrin", "Cask", "Wobbles"],
+            faction: "Tavern",
             rewardRange: [0, 15],
-            pressureProfile: { embarrassment: 0.30, danger: 0.10, freedomCost: 0.15 },
+            persistenceRange: [0.40, 0.70],
+            publicityRange: [0.35, 0.65],
+            authorityRange: [0.0, 0.15],
             incidentWeights: { customer_refuses_to_leave: 0.5, fight_starts: 0.25, someone_bothering_patron: 0.25 }
         },
 
         flirtatious: {
             names: ["Sable", "Corin", "Vesh"],
+            faction: "Tavern",
             rewardRange: [15, 50],
-            pressureProfile: { embarrassment: 0.45, modestyCost: 0.35, freedomCost: 0.10 },
+            persistenceRange: [0.45, 0.80],
+            publicityRange: [0.30, 0.60],
+            authorityRange: [0.05, 0.25],
             incidentWeights: { request_outside_normal_service: 0.7, pressure_after_refusal: 0.3 }
         },
 
         wealthy: {
             names: ["Lady Ashworth", "Count Vellan", "Dame Ori"],
+            faction: "Nobles",
             rewardRange: [80, 300],
-            pressureProfile: { embarrassment: 0.15, prideCost: 0.20, dignityCost: 0.15 },
+            persistenceRange: [0.35, 0.65],
+            publicityRange: [0.20, 0.45],
+            authorityRange: [0.55, 0.90],
             incidentWeights: { customer_demands_priority: 0.4, large_tip: 0.4, request_outside_normal_service: 0.2 }
         },
 
         suspicious: {
             names: ["The Hooded One", "Quell", "Mira the Quiet"],
+            faction: "Street",
             rewardRange: [10, 40],
-            pressureProfile: { danger: 0.15, embarrassment: 0.05 },
+            persistenceRange: [0.20, 0.45],
+            publicityRange: [0.0, 0.20],
+            authorityRange: [0.0, 0.15],
             incidentWeights: { suspected_theft: 0.6, customer_refuses_to_leave: 0.4 }
         },
 
         lonely: {
             names: ["Widow Talle", "Barnabus", "Young Perrin"],
+            faction: "Tavern",
             rewardRange: [10, 35],
-            pressureProfile: { embarrassment: 0.15, freedomCost: 0.05 },
+            persistenceRange: [0.15, 0.40],
+            publicityRange: [0.05, 0.25],
+            authorityRange: [0.0, 0.15],
             incidentWeights: { request_outside_normal_service: 0.4, someone_bothering_patron: 0.2 }
+        }
+
+    };
+
+    // =========================================================================
+    // NAMED REGULARS (authored)
+    // =========================================================================
+    //
+    // Fixed customers with a stable pressure profile and an
+    // AIH.Relationships entry, so familiarity built up over repeat visits
+    // actually persists and feeds back in (see _regularPressureOptions
+    // below). Values here are still just DATA fed into the same evaluator
+    // - nothing here decides an outcome directly.
+    //
+    // "CityGuard" is not one of AIH.Reputation's default factions - it is
+    // registered dynamically on first use via AIH.Reputation.addFaction(),
+    // the module's own sanctioned way of adding a faction, not by editing
+    // AIH_Reputation.js.
+    //
+    // =========================================================================
+
+    AIH.MinigameService.REGULARS = {
+
+        old_grum: {
+            npcId: "tavern_old_grum",
+            name: "Old Grum",
+            faction: "Tavern",
+            persistence: 0.15,
+            publicity: 0.10,
+            authority: 0.05,
+            rewardRange: [10, 30]
+        },
+
+        baroness_fenwick: {
+            npcId: "tavern_baroness_fenwick",
+            name: "Baroness Fenwick",
+            faction: "Nobles",
+            persistence: 0.55,
+            publicity: 0.40,
+            authority: 0.85,
+            rewardRange: [120, 260]
+        },
+
+        sergeant_kell: {
+            npcId: "tavern_sergeant_kell",
+            name: "Sergeant Kell",
+            faction: "CityGuard",
+            persistence: 0.40,
+            publicity: 0.25,
+            authority: 0.60,
+            rewardRange: [30, 80]
         }
 
     };
@@ -300,13 +388,20 @@ var AIH = AIH || {};
     // "kind" determines which resolution path handles the incident:
     //
     //     request        a single accept/reject/negotiate situation, built
-    //                    from the triggering customer's pressure profile
-    //                    plus this template's own overrides
+    //                    from baseSituation plus the triggering
+    //                    customer's publicity/authority (see
+    //                    _buildRequestSituation)
     //
-    //     bouncer         a multi-candidate situation resolved through
-    //                    _chooseBest() across BOUNCER_RESPONSES
+    //     bouncer         a standalone multi-candidate confrontation
+    //                    resolved through resolveConfrontation()
     //
     //     complaint       routed to the dish-alteration system
+    //
+    // baseSituation mirrors AIH_Minigame_Bathhouse.js's REQUEST_TEMPLATES
+    // shape - danger/embarrassment/dignityCost/freedomCost/modestyCost/
+    // prideCost are the BASE values before _buildRequestSituation folds
+    // in the customer's publicity (-> embarrassment) and authority
+    // (-> dignityCost/prideCost multiplier).
     //
     // =========================================================================
 
@@ -314,49 +409,84 @@ var AIH = AIH || {};
 
         customer_demands_priority: {
             kind: "request",
-            severity: "normal",
-            baseDanger: 0,
             trait: "assertiveness",
-            direction: "increase"
+            direction: "increase",
+            baseSituation: {
+                severity: "normal",
+                danger: 0,
+                embarrassment: 0.10,
+                dignityCost: 0.05,
+                freedomCost: 0.10,
+                modestyCost: 0,
+                prideCost: 0.15
+            }
         },
 
         request_outside_normal_service: {
             kind: "request",
-            severity: "medium",
-            baseDanger: 0,
             trait: "inhibition",
-            direction: "decrease"
+            direction: "decrease",
+            baseSituation: {
+                severity: "medium",
+                danger: 0,
+                embarrassment: 0.20,
+                dignityCost: 0.05,
+                freedomCost: 0.10,
+                modestyCost: 0.25,
+                prideCost: 0.05
+            }
         },
 
         pressure_after_refusal: {
             kind: "request",
-            severity: "rare",
-            baseDanger: 0,
             trait: "approvalSeeking",
             direction: "increase",
             /*
              * This is the explicit "refusal is not necessarily the end"
-             * mechanic - see resolveOrder/resolveRequest below. It is
-             * generated as a FOLLOW-UP after a "reject" or "partial"
-             * response, not spawned independently.
+             * mechanic - see resolveRequestIncident below. It is
+             * generated as a FOLLOW-UP after a "reject" response, not
+             * spawned independently.
              */
-            isFollowUp: true
+            isFollowUp: true,
+            baseSituation: {
+                severity: "rare",
+                danger: 0,
+                embarrassment: 0.30,
+                dignityCost: 0.10,
+                freedomCost: 0.15,
+                modestyCost: 0.30,
+                prideCost: 0.10
+            }
         },
 
         large_tip: {
             kind: "request",
-            severity: "medium",
-            baseDanger: 0,
             trait: "approvalSeeking",
-            direction: "increase"
+            direction: "increase",
+            baseSituation: {
+                severity: "medium",
+                danger: 0,
+                embarrassment: 0.15,
+                dignityCost: 0.05,
+                freedomCost: 0.05,
+                modestyCost: 0.10,
+                prideCost: 0.05
+            }
         },
 
         suspected_theft: {
             kind: "request",
-            severity: "normal",
-            baseDanger: 0.1,
             trait: "trust",
-            direction: "decrease"
+            direction: "decrease",
+            baseSituation: {
+                severity: "normal",
+                danger: 0.1,
+                embarrassment: 0.05,
+                dignityCost: 0,
+                freedomCost: 0,
+                modestyCost: 0,
+                prideCost: 0
+            }
         },
 
         customer_refuses_to_leave: {
@@ -386,6 +516,26 @@ var AIH = AIH || {};
     // values - _buildBouncerSituation scales them against the incident's
     // own severity.
     //
+    // IMPORTANT - "separate" is not actually the safe default it looks
+    // like. Pulling two riled-up patrons apart without otherwise engaging
+    // them tends to redirect their attention onto HER instead of each
+    // other. If she then declines that attention, it can escalate into
+    // exactly the danger she was trying to avoid. This is modeled as a
+    // genuine backfire chain (see _resolveSeparateBackfire), not as
+    // a static pressure value - so "separate" only reads as low-risk in
+    // the moment, and its real expected risk depends on what she does
+    // next, which in turn depends on her actual current personality
+    // (inhibition/approvalSeeking). A heroine who has drifted toward
+    // higher approvalSeeking will defuse the follow-up safely more often;
+    // a heroine who has not will refuse more often and escalate more
+    // often. "entertain" is the direct, immediately-safe alternative -
+    // choosing to defuse by engaging the patrons rather than separating
+    // them - which costs her personally (boundary-wise) rather than
+    // physically. "intervene_physically" remains the single highest
+    // immediate-danger option, but unlike a failed "separate" it resolves
+    // the incident decisively rather than risking a worse escalation
+    // afterward.
+    //
     // =========================================================================
 
     AIH.MinigameService.BOUNCER_RESPONSES = [
@@ -406,9 +556,24 @@ var AIH = AIH || {};
         },
 
         {
+            action: "entertain",
+            danger: 0.05, prideCost: 0.15, dignityCost: 0.10,
+            embarrassment: 0.35, modestyCost: 0.20, reward: 25,
+            trait: "inhibition", direction: "decrease",
+            fitFor: ["customer_refuses_to_leave", "someone_bothering_patron"]
+        },
+
+        {
             action: "separate",
-            danger: 0.15, prideCost: 0.0, dignityCost: 0.0,
-            embarrassment: 0.10, reward: 0,
+            /*
+             * Base profile only - the real risk lives in the follow-up
+             * chain (_resolveSeparateBackfire), not here. Kept
+             * deliberately non-trivial (not free) even before that chain
+             * runs, since getting between two upset patrons is not
+             * actually costless.
+             */
+            danger: 0.15, prideCost: 0.05, dignityCost: 0.0,
+            embarrassment: 0.15, reward: 0,
             trait: "assertiveness", direction: "increase",
             fitFor: ["someone_bothering_patron"]
         },
@@ -786,6 +951,28 @@ var AIH = AIH || {};
     // =========================================================================
     // CUSTOMER SPAWNING
     // =========================================================================
+    //
+    // Two-tier sourcing, mirroring AIH_Minigame_Bathhouse.js: spawnCustomer
+    // generates a one-off customer from an archetype's ranges (so two
+    // "impatient" customers don't pressure her identically); spawnRegular
+    // pulls in a named, fixed-profile customer from REGULARS and gives
+    // them a persistent AIH.Relationships entry, which is what lets
+    // familiarity actually accumulate and feed back in (see
+    // _regularPressureOptions below).
+    //
+    // Both converge on the same customer shape:
+    //   { kind: "generated"|"regular", id, name, faction, persistence,
+    //     publicity, authority, rewardRange, served }
+    //
+    // =========================================================================
+
+    AIH.MinigameService._randomBetween = function(min, max) {
+
+        min = AIH.MinigameService._number(min, 0);
+        max = AIH.MinigameService._number(max, min);
+
+        return min + Math.random() * (max - min);
+    };
 
     AIH.MinigameService.spawnCustomer = function(archetypeKey) {
 
@@ -814,6 +1001,8 @@ var AIH = AIH || {};
 
         customer = {
 
+            kind: "generated",
+
             id:
                 AIH.MinigameService._nextCustomerId(),
 
@@ -825,6 +1014,30 @@ var AIH = AIH || {};
                     Math.floor(Math.random() * names.length)
                 ],
 
+            faction:
+                archetype.faction || null,
+
+            persistence:
+                AIH.MinigameService._randomBetween(
+                    archetype.persistenceRange[0],
+                    archetype.persistenceRange[1]
+                ),
+
+            publicity:
+                AIH.MinigameService._randomBetween(
+                    archetype.publicityRange[0],
+                    archetype.publicityRange[1]
+                ),
+
+            authority:
+                AIH.MinigameService._randomBetween(
+                    archetype.authorityRange[0],
+                    archetype.authorityRange[1]
+                ),
+
+            rewardRange:
+                archetype.rewardRange.slice(),
+
             arrivedAt:
                 Date.now(),
 
@@ -834,42 +1047,191 @@ var AIH = AIH || {};
 
         container.activeCustomers.push(customer);
 
-        AIH.MinigameService._trackRegular(customer);
+        return AIH.MinigameService._copy(customer);
+    };
+
+    AIH.MinigameService.spawnRegular = function(regularId) {
+
+        var regular;
+        var container;
+        var customer;
+
+        regular =
+            AIH.MinigameService.REGULARS[regularId];
+
+        if (!regular) {
+            return null;
+        }
+
+        container =
+            AIH.MinigameService._ensure();
+
+        if (!container) {
+            return null;
+        }
+
+        customer = {
+
+            kind: "regular",
+
+            id:
+                regular.npcId,
+
+            regularId:
+                regularId,
+
+            name:
+                regular.name,
+
+            faction:
+                regular.faction || null,
+
+            persistence:
+                regular.persistence,
+
+            publicity:
+                regular.publicity,
+
+            authority:
+                regular.authority,
+
+            rewardRange:
+                regular.rewardRange.slice(),
+
+            arrivedAt:
+                Date.now(),
+
+            served:
+                false
+        };
+
+        container.activeCustomers.push(customer);
+
+        AIH.MinigameService.ensureRegularRelationship(
+            customer
+        );
 
         return AIH.MinigameService._copy(customer);
     };
 
-    /*
-     * Recurring customers should be able to build genuine familiarity over
-     * time. This uses AIH.Relationships exactly as already built - no new
-     * relationship-tracking system needed.
-     */
-    AIH.MinigameService._trackRegular = function(customer) {
+    // =========================================================================
+    // REGULAR RELATIONSHIP TRACKING
+    // =========================================================================
+    //
+    // Per MINIGAME_HANDOFF.md Section 7 - "your minigame's equivalent [of
+    // livestream viewer favor/trust/familiarity], if it has one, goes
+    // here." A regular's familiarity is read back in as domainPressure (a
+    // regular she knows well applies more comfortable, less alarming
+    // pressure) and trust as an attachmentDiscount (someone she trusts
+    // gets a little slack on resistance). This calls straight into
+    // AIH.Relationships - it does not invent a second relationship
+    // system.
+    //
+    // =========================================================================
+
+    AIH.MinigameService.ensureRegularRelationship = function(customer) {
+
+        if (
+            !customer ||
+            customer.kind !== "regular"
+        ) {
+
+            return null;
+        }
 
         if (
             typeof AIH.Relationships === "undefined" ||
             !AIH.Relationships.add
         ) {
 
-            return;
+            return null;
         }
 
-        AIH.Relationships.add(
-            "customer_" + customer.name.replace(/\s+/g, "_").toLowerCase(),
+        return AIH.Relationships.add(
+            customer.id,
             customer.name,
-            "Tavern"
+            customer.faction
         );
+    };
 
-        AIH.Relationships.modifyAxis(
-            "customer_" + customer.name.replace(/\s+/g, "_").toLowerCase(),
-            "familiarity",
-            2,
-            "visited during a shift"
-        );
+    AIH.MinigameService._regularPressureOptions = function(customer) {
+
+        var relationship;
+        var familiarity;
+        var trust;
+
+        if (
+            !customer ||
+            customer.kind !== "regular" ||
+            typeof AIH.Relationships === "undefined" ||
+            !AIH.Relationships.get
+        ) {
+
+            return {};
+        }
+
+        relationship =
+            AIH.Relationships.get(customer.id);
+
+        if (!relationship) {
+            return {};
+        }
+
+        familiarity =
+            Number(relationship.familiarity) || 0;
+
+        trust =
+            Number(relationship.trust) || 0;
+
+        return {
+
+            /*
+             * familiarity is stored -100..100 (see
+             * AIH.Relationships._clampFamiliarity) - scaled down here into
+             * a raw pressure term the same way the livestream integration
+             * uses domainPressure. Deliberately gentle: a regular's
+             * familiarity should nudge things, not dominate the
+             * evaluation.
+             */
+            domainPressure:
+                familiarity * 0.15,
+
+            attachmentDiscount:
+                AIH.MinigameService._clamp01(
+                    trust / 100
+                ) * 0.12
+        };
+    };
+
+    // =========================================================================
+    // AUTHORITY FACTOR
+    // =========================================================================
+    //
+    // Mirrors AIH_Minigame_Bathhouse.js's authorityFactor exactly: a
+    // customer with real authority makes dignity/pride costs weigh more,
+    // not less - being condescended to by someone who genuinely can make
+    // her life difficult stings more than the identical words from a
+    // nobody.
+    //
+    // =========================================================================
+
+    AIH.MinigameService._authorityFactor = function(authority) {
+
+        return 1 +
+            AIH.MinigameService._number(authority, 0) * 0.35;
     };
 
     // =========================================================================
     // BUILD A REQUEST SITUATION FROM A CUSTOMER + INCIDENT
+    // =========================================================================
+    //
+    // publicity folds into embarrassment directly; authority scales
+    // dignityCost/prideCost via _authorityFactor. persistence is
+    // deliberately NOT folded in here - it drives escalation probability
+    // and confrontation intensity instead (see resolveRequestIncident and
+    // _confrontationIntensity), not the base situation's pressure fields,
+    // matching AIH_Minigame_Bathhouse.js's own division of responsibility.
+    //
     // =========================================================================
 
     AIH.MinigameService._buildRequestSituation = function(
@@ -877,28 +1239,28 @@ var AIH = AIH || {};
         incidentType
     ) {
 
-        var archetype;
         var template;
-        var profile;
+        var base;
+        var authorityFactor;
         var reward;
-
-        archetype =
-            AIH.MinigameService.CUSTOMER_TYPES[customer.archetype] ||
-            {};
 
         template =
             AIH.MinigameService.INCIDENT_TYPES[incidentType] ||
             {};
 
-        profile =
-            archetype.pressureProfile ||
+        base =
+            template.baseSituation ||
             {};
 
+        authorityFactor =
+            AIH.MinigameService._authorityFactor(customer.authority);
+
         reward =
-            archetype.rewardRange ?
-                archetype.rewardRange[0] +
-                Math.random() *
-                (archetype.rewardRange[1] - archetype.rewardRange[0]) :
+            customer.rewardRange ?
+                AIH.MinigameService._randomBetween(
+                    customer.rewardRange[0],
+                    customer.rewardRange[1]
+                ) :
                 20;
 
         return AIH.PressureEvaluator.normalizeSituation({
@@ -907,32 +1269,40 @@ var AIH = AIH || {};
             type: "waitressing_request",
             category: incidentType,
             description:
-                customer.name + " (" + customer.archetype + "): " +
-                incidentType,
+                customer.name + ": " + incidentType,
 
             severity:
-                template.severity ||
+                base.severity ||
                 "normal",
 
             reward: Math.round(reward),
 
             danger:
-                AIH.MinigameService._number(profile.danger, template.baseDanger || 0),
+                AIH.MinigameService._number(base.danger, 0),
 
             embarrassment:
-                AIH.MinigameService._number(profile.embarrassment, 0.1),
+                AIH.MinigameService._clamp01(
+                    AIH.MinigameService._number(base.embarrassment, 0.1) +
+                    AIH.MinigameService._number(customer.publicity, 0) * 0.20
+                ),
 
             dignityCost:
-                AIH.MinigameService._number(profile.dignityCost, 0),
+                AIH.MinigameService._clamp01(
+                    AIH.MinigameService._number(base.dignityCost, 0) *
+                    authorityFactor
+                ),
 
             freedomCost:
-                AIH.MinigameService._number(profile.freedomCost, 0.05),
+                AIH.MinigameService._number(base.freedomCost, 0.05),
 
             modestyCost:
-                AIH.MinigameService._number(profile.modestyCost, 0),
+                AIH.MinigameService._number(base.modestyCost, 0),
 
             prideCost:
-                AIH.MinigameService._number(profile.prideCost, 0),
+                AIH.MinigameService._clamp01(
+                    AIH.MinigameService._number(base.prideCost, 0) *
+                    authorityFactor
+                ),
 
             source: customer
 
@@ -946,7 +1316,13 @@ var AIH = AIH || {};
     // See the file header for why this exists. Any minigame framework
     // needing a multi-option decision can reuse this exact pattern.
     //
-    // candidates: array of { action, situation, meta }
+    // candidates: array of { action, situation, meta, options }
+    //             "options" is the same PressureEvaluator options object
+    //             (domainPressure/domainResistance/attachmentDiscount) any
+    //             other evaluate() call would take - typically the same
+    //             _regularPressureOptions(customer) result passed to every
+    //             candidate so a regular's familiarity/trust applies
+    //             consistently across all of them, not just one.
     //
     // Returns { action, evaluation, meta } for the winner, ranked first by
     // response tier (accept > reluctant_accept > partial > reject), then
@@ -983,7 +1359,8 @@ var AIH = AIH || {};
 
             evaluation =
                 AIH.PressureEvaluator.evaluate(
-                    candidate.situation
+                    candidate.situation,
+                    candidate.options || {}
                 );
 
             rank =
@@ -1007,33 +1384,68 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
-    // BUILD A BOUNCER SITUATION FOR ONE CANDIDATE RESPONSE
+    // CONFRONTATION INTENSITY
+    // =========================================================================
+    //
+    // Mirrors AIH_Minigame_Bathhouse.js's _confrontationIntensity exactly:
+    // how charged this specific confrontation is, driven by the specific
+    // customer's persistence and authority rather than a flat per-
+    // incident-type severity tier. Reused across every candidate
+    // response's situation AND the backfire/mishap rolls below, so a
+    // pushy, high-authority customer makes the whole confrontation more
+    // volatile in every direction at once, not just one.
+    //
+    // =========================================================================
+
+    AIH.MinigameService._confrontationIntensity = function(customer) {
+
+        return 1 +
+            AIH.MinigameService._number(customer && customer.persistence, 0.3) * 0.3 +
+            AIH.MinigameService._number(customer && customer.authority, 0.1) * 0.2;
+    };
+
+    // =========================================================================
+    // BUILD A CONFRONTATION SITUATION FOR ONE CANDIDATE RESPONSE
+    // =========================================================================
+    //
+    // Combines Service's own fitFor bonus/penalty (does this response
+    // actually suit THIS incident type) with the customer-driven intensity
+    // multiplier (how charged is THIS specific confrontation) - the two
+    // are independent axes: fitFor differentiates WHICH response makes
+    // sense for a given incident, intensity differentiates HOW MUCH any of
+    // them cost for a given customer.
+    //
     // =========================================================================
 
     AIH.MinigameService._buildBouncerSituation = function(
         incidentType,
-        responseOption
+        responseOption,
+        customer,
+        intensity
     ) {
 
         var template;
-        var severityScale;
         var fits;
         var isTargeted;
         var mismatchPenalty;
         var fitBonus;
+        var authorityFactor;
 
         template =
             AIH.MinigameService.INCIDENT_TYPES[incidentType] ||
             {};
 
-        severityScale =
-            template.severity === "rare" ?
-                1.3 :
-                1.0;
+        intensity =
+            AIH.MinigameService._number(intensity, 1.0);
+
+        authorityFactor =
+            AIH.MinigameService._authorityFactor(
+                customer && customer.authority
+            );
 
         /*
          * fitFor makes different bouncer responses actually differentiate
-         * per incident type, rather than the same 8 profiles always
+         * per incident type, rather than the same profiles always
          * ranking the same way regardless of what is happening. A response
          * with no fitFor list is general-purpose and unaffected either
          * way. A response WITH a fitFor list is a targeted response: it
@@ -1076,7 +1488,7 @@ var AIH = AIH || {};
             danger:
                 AIH.MinigameService._clamp01(
                     (responseOption.danger || 0) *
-                    severityScale *
+                    intensity *
                     fitBonus *
                     mismatchPenalty
                 ),
@@ -1084,6 +1496,7 @@ var AIH = AIH || {};
             embarrassment:
                 AIH.MinigameService._clamp01(
                     (responseOption.embarrassment || 0) *
+                    intensity *
                     fitBonus *
                     mismatchPenalty
                 ),
@@ -1091,17 +1504,24 @@ var AIH = AIH || {};
             dignityCost:
                 AIH.MinigameService._clamp01(
                     (responseOption.dignityCost || 0) *
+                    authorityFactor *
                     fitBonus *
                     mismatchPenalty
                 ),
 
             freedomCost: 0,
 
-            modestyCost: 0,
+            modestyCost:
+                AIH.MinigameService._clamp01(
+                    (responseOption.modestyCost || 0) *
+                    fitBonus *
+                    mismatchPenalty
+                ),
 
             prideCost:
                 AIH.MinigameService._clamp01(
                     (responseOption.prideCost || 0) *
+                    authorityFactor *
                     fitBonus *
                     mismatchPenalty
                 )
@@ -1125,7 +1545,6 @@ var AIH = AIH || {};
 
         var container;
         var customer;
-        var archetype;
         var tip;
         var index;
 
@@ -1143,16 +1562,13 @@ var AIH = AIH || {};
             return null;
         }
 
-        archetype =
-            AIH.MinigameService.CUSTOMER_TYPES[customer.archetype] ||
-            {};
-
         tip =
-            archetype.rewardRange ?
+            customer.rewardRange ?
                 Math.round(
-                    archetype.rewardRange[0] +
-                    Math.random() *
-                    (archetype.rewardRange[1] - archetype.rewardRange[0])
+                    AIH.MinigameService._randomBetween(
+                        customer.rewardRange[0],
+                        customer.rewardRange[1]
+                    )
                 ) :
                 15;
 
@@ -1166,6 +1582,14 @@ var AIH = AIH || {};
 
             container.currentShift.customersServed += 1;
             container.currentShift.totalTips += tip;
+        }
+
+        if (customer.kind === "regular") {
+
+            AIH.MinigameService.modifyRegularFamiliarity(
+                customer,
+                [{ response: "accept" }]
+            );
         }
 
         index =
@@ -1184,27 +1608,26 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
-    // RESOLVE A REQUEST-KIND INCIDENT
+    // RESOLVE A SINGLE REQUEST (evaluate + report outcome)
     // =========================================================================
     //
-    // Handles the "refusal is not necessarily the end" mechanic: a reject
-    // or partial response on a non-follow-up incident has a chance of
-    // generating a pressure_after_refusal follow-up situation instead of
-    // simply ending the interaction, exactly as MINIGAME_HANDOFF.md
-    // Section 8 requires.
+    // A single situation, evaluated once. resolveRequestIncident (below)
+    // is the public entry point that chains a primary request, its
+    // follow-up, and an eventual confrontation together the way
+    // AIH_Minigame_Bathhouse.js's resolveVisit does; this is the single-
+    // situation building block that does not know about that chain.
     //
     // =========================================================================
 
-    AIH.MinigameService.resolveRequestIncident = function(
+    AIH.MinigameService._resolveRequest = function(
         customer,
         incidentType
     ) {
 
         var template;
         var situation;
+        var options;
         var evaluation;
-        var result;
-        var followUp;
 
         template =
             AIH.MinigameService.INCIDENT_TYPES[incidentType];
@@ -1223,17 +1646,16 @@ var AIH = AIH || {};
                 incidentType
             );
 
+        options =
+            AIH.MinigameService._regularPressureOptions(
+                customer
+            );
+
         evaluation =
-            AIH.PressureEvaluator.evaluate(situation);
-
-        result = {
-
-            incidentType: incidentType,
-            customer: customer,
-            evaluation: evaluation,
-            followUp: null
-
-        };
+            AIH.PressureEvaluator.evaluate(
+                situation,
+                options
+            );
 
         AIH.MinigameService._reportOutcome(
             template.trait,
@@ -1242,41 +1664,38 @@ var AIH = AIH || {};
             "waitressing: " + incidentType + " with " + customer.name
         );
 
-        if (
-            !template.isFollowUp &&
-            (
-                evaluation.response === "reject" ||
-                evaluation.response === "partial"
-            ) &&
-            Math.random() < 0.4
-        ) {
+        return {
 
-            followUp =
-                AIH.MinigameService.resolveRequestIncident(
-                    customer,
-                    "pressure_after_refusal"
-                );
+            incidentType: incidentType,
+            customer: customer,
+            evaluation: evaluation
 
-            result.followUp =
-                followUp;
-        }
-
-        AIH.MinigameService._logIncident(result);
-
-        return result;
+        };
     };
 
     // =========================================================================
-    // RESOLVE A BOUNCER-KIND INCIDENT
+    // RESOLVE A REQUEST-KIND INCIDENT (public entry point)
+    // =========================================================================
+    //
+    // Mirrors AIH_Minigame_Bathhouse.js's resolveVisit: a primary request,
+    // a follow-up if it's refused, and - if the follow-up is ALSO refused -
+    // an escalation into a genuine confrontation (resolveConfrontation),
+    // rather than the interaction just quietly ending. This is the
+    // explicit "refusal is not necessarily the end" mechanic from
+    // MINIGAME_HANDOFF.md Section 8.
+    //
     // =========================================================================
 
-    AIH.MinigameService.resolveBouncerIncident = function(incidentType) {
+    AIH.MinigameService.resolveRequestIncident = function(
+        customer,
+        incidentType
+    ) {
 
         var template;
-        var candidates;
-        var i;
-        var option;
-        var winner;
+        var outcomes;
+        var primary;
+        var followUp;
+        var confrontation;
         var result;
 
         template =
@@ -1284,11 +1703,175 @@ var AIH = AIH || {};
 
         if (
             !template ||
-            template.kind !== "bouncer"
+            template.kind !== "request"
         ) {
 
             return null;
         }
+
+        if (customer.kind === "regular") {
+
+            AIH.MinigameService.ensureRegularRelationship(
+                customer
+            );
+        }
+
+        outcomes = [];
+
+        primary =
+            AIH.MinigameService._resolveRequest(
+                customer,
+                incidentType
+            );
+
+        if (!primary) {
+            return null;
+        }
+
+        outcomes.push(primary);
+
+        followUp = null;
+        confrontation = null;
+
+        if (
+            !template.isFollowUp &&
+            primary.evaluation.response === "reject"
+        ) {
+
+            followUp =
+                AIH.MinigameService._resolveRequest(
+                    customer,
+                    "pressure_after_refusal"
+                );
+
+            if (followUp) {
+                outcomes.push(followUp);
+            }
+        }
+
+        /*
+         * Two refusals in a row stops being "a request she declined" and
+         * becomes an actual confrontation she has to handle - see the
+         * CONFRONTATION SYSTEM below.
+         */
+        if (
+            followUp &&
+            followUp.evaluation.response === "reject"
+        ) {
+
+            confrontation =
+                AIH.MinigameService.resolveConfrontation(
+                    customer,
+                    incidentType
+                );
+        }
+
+        if (customer.kind === "regular") {
+
+            var evaluationOutcomes =
+                outcomes.map(function(o) { return o.evaluation; });
+
+            AIH.MinigameService.modifyRegularFamiliarity(
+                customer,
+                evaluationOutcomes
+            );
+
+            AIH.MinigameService.modifyRegularFactionReputation(
+                customer,
+                evaluationOutcomes
+            );
+
+            AIH.MinigameService.checkHarassmentPattern(
+                customer,
+                incidentType,
+                evaluationOutcomes
+            );
+        }
+
+        result = {
+
+            incidentType: incidentType,
+            customer: customer,
+            evaluation: primary.evaluation,
+            followUp: followUp,
+            confrontation: confrontation
+
+        };
+
+        AIH.MinigameService._logIncident(result);
+
+        return result;
+    };
+
+    // =========================================================================
+    // CONFRONTATION SYSTEM (chooseBest across candidate responses)
+    // =========================================================================
+    //
+    // BOUNCER_RESPONSES's comment explains the design intent behind each
+    // option. Two responses carry their own extra downside beyond their
+    // base situation cost, mirroring AIH_Minigame_Bathhouse.js's proven
+    // confrontation system exactly:
+    //
+    //     separate     can backfire - the separated patrons redirect their
+    //                  attention onto her, and if she declines THAT, it
+    //                  escalates into a forced, more dangerous
+    //                  confrontation. Chance scales with the customer's
+    //                  persistence, same as Bathhouse's deflect_calmly.
+    //
+    //     intervene_physically   carries its own baked-in mishap chance -
+    //                  even when it is the chosen response, it can still
+    //                  go wrong. This does not change the response tier;
+    //                  it is recorded as an extra fact about how it went.
+    //
+    // =========================================================================
+
+    AIH.MinigameService.CONFRONTATION_BACKFIRE_BASE_CHANCE = 0.30;
+
+    AIH.MinigameService.CONFRONTATION_MISHAP_CHANCE = 0.35;
+
+    AIH.MinigameService._findBouncerOption = function(action) {
+
+        var i;
+
+        for (
+            i = 0;
+            i < AIH.MinigameService.BOUNCER_RESPONSES.length;
+            i++
+        ) {
+
+            if (AIH.MinigameService.BOUNCER_RESPONSES[i].action === action) {
+                return AIH.MinigameService.BOUNCER_RESPONSES[i];
+            }
+        }
+
+        return null;
+    };
+
+    AIH.MinigameService.resolveConfrontation = function(
+        customer,
+        contextIncidentType
+    ) {
+
+        var intensity;
+        var options;
+        var candidates;
+        var i;
+        var option;
+        var winner;
+        var backfire;
+        var mishapOccurred;
+        var wentWell;
+        var result;
+
+        if (!customer) {
+            return null;
+        }
+
+        intensity =
+            AIH.MinigameService._confrontationIntensity(customer);
+
+        options =
+            AIH.MinigameService._regularPressureOptions(customer);
 
         candidates = [];
 
@@ -1307,9 +1890,13 @@ var AIH = AIH || {};
 
                 situation:
                     AIH.MinigameService._buildBouncerSituation(
-                        incidentType,
-                        option
+                        contextIncidentType,
+                        option,
+                        customer,
+                        intensity
                     ),
+
+                options: options,
 
                 meta: option
 
@@ -1323,19 +1910,58 @@ var AIH = AIH || {};
             return null;
         }
 
-        result = {
-
-            incidentType: incidentType,
-            chosenAction: winner.action,
-            evaluation: winner.evaluation
-
-        };
-
         AIH.MinigameService._reportOutcome(
             winner.meta.trait,
             winner.meta.direction,
             winner.evaluation,
-            "waitressing bouncer incident: " + incidentType + " -> " + winner.action
+            "waitressing confrontation: " + contextIncidentType + " -> " + winner.action
+        );
+
+        backfire = null;
+        mishapOccurred = false;
+
+        if (winner.action === "separate") {
+
+            backfire =
+                AIH.MinigameService._resolveSeparateBackfire(
+                    customer,
+                    contextIncidentType,
+                    options,
+                    intensity
+                );
+        }
+
+        if (winner.action === "intervene_physically") {
+
+            mishapOccurred =
+                Math.random() <
+                AIH.MinigameService.CONFRONTATION_MISHAP_CHANCE;
+        }
+
+        wentWell =
+            winner.action !== "entertain" &&
+            !(backfire && !backfire.heldGround);
+
+        result = {
+
+            contextIncidentType: contextIncidentType,
+            customer: customer,
+            chosenAction: winner.action,
+            evaluation: winner.evaluation,
+            intensity: intensity,
+            backfire: backfire,
+            mishapOccurred: mishapOccurred,
+            wentWell: wentWell
+
+        };
+
+        AIH.MinigameService.modifyPatronFactionReputationForConfrontation(
+            customer,
+            result
+        );
+
+        AIH.MinigameService.checkReputationAmbitionGoal(
+            wentWell
         );
 
         AIH.MinigameService._logIncident(result);
@@ -1344,14 +1970,184 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
+    // SEPARATE BACKFIRE
+    // =========================================================================
+    //
+    // Mirrors AIH_Minigame_Bathhouse.js's _resolveDeflectBackfire exactly.
+    // The redirected patrons pushing for her attention is a single-
+    // situation follow-up (not another multi-candidate chooser): she
+    // either defuses it or refuses it, which forces a real, higher-danger
+    // confrontation - only intervene_physically/call_authority make sense
+    // once it has gone that far.
+    //
+    // =========================================================================
+
+    AIH.MinigameService._resolveSeparateBackfire = function(
+        customer,
+        contextIncidentType,
+        options,
+        intensity
+    ) {
+
+        var chance;
+        var triggered;
+        var followUpSituation;
+        var followUpEvaluation;
+        var heldGround;
+        var escalation;
+
+        chance =
+            AIH.MinigameService._clamp01(
+                AIH.MinigameService.CONFRONTATION_BACKFIRE_BASE_CHANCE +
+                AIH.MinigameService._number(customer.persistence, 0.3) * 0.35
+            );
+
+        triggered =
+            Math.random() < chance;
+
+        if (!triggered) {
+
+            return {
+                triggered: false,
+                heldGround: true
+            };
+        }
+
+        followUpSituation =
+            AIH.PressureEvaluator.normalizeSituation({
+
+                id: "bouncer_followup_" + contextIncidentType + "_" + Date.now(),
+                type: "bouncer_followup",
+                category: contextIncidentType,
+                description:
+                    "separated patrons redirect their attention onto her",
+
+                severity: "medium",
+
+                reward: 0,
+
+                danger:
+                    AIH.MinigameService._clamp01(0.15 * intensity),
+
+                embarrassment:
+                    AIH.MinigameService._clamp01(0.40 * intensity),
+
+                dignityCost: 0.15,
+                modestyCost: 0.30,
+                prideCost: 0.20,
+                freedomCost: 0.15
+
+            });
+
+        followUpEvaluation =
+            AIH.PressureEvaluator.evaluate(
+                followUpSituation,
+                options
+            );
+
+        AIH.MinigameService._reportOutcome(
+            "inhibition",
+            "decrease",
+            followUpEvaluation,
+            "waitressing confrontation backfire: defusing redirected attention after separating " +
+            contextIncidentType,
+            { rewardedOverride: true }
+        );
+
+        heldGround =
+            followUpEvaluation.response === "reject";
+
+        if (!heldGround) {
+
+            return {
+                triggered: true,
+                heldGround: false,
+                evaluation: followUpEvaluation,
+                escalated: false
+            };
+        }
+
+        /*
+         * She refused the redirected attention. This is no longer a
+         * social situation - only the two options that make sense once
+         * things have gone physical are on the table.
+         */
+        escalation =
+            AIH.MinigameService._chooseBest([
+
+                {
+                    action: "intervene_physically",
+                    situation: AIH.MinigameService._buildBouncerSituation(
+                        "fight_starts",
+                        AIH.MinigameService._findBouncerOption("intervene_physically"),
+                        customer,
+                        intensity
+                    ),
+                    options: options,
+                    meta: AIH.MinigameService._findBouncerOption("intervene_physically")
+                },
+
+                {
+                    action: "call_authority",
+                    situation: AIH.MinigameService._buildBouncerSituation(
+                        "fight_starts",
+                        AIH.MinigameService._findBouncerOption("call_authority"),
+                        customer,
+                        intensity
+                    ),
+                    options: options,
+                    meta: AIH.MinigameService._findBouncerOption("call_authority")
+                }
+
+            ]);
+
+        AIH.MinigameService._reportOutcome(
+            escalation.meta.trait,
+            escalation.meta.direction,
+            escalation.evaluation,
+            "waitressing confrontation backfire escalated to a forced confrontation after " +
+            contextIncidentType
+        );
+
+        return {
+
+            triggered: true,
+            heldGround: false,
+            evaluation: followUpEvaluation,
+            escalated: true,
+            escalationAction: escalation.action,
+            escalationEvaluation: escalation.evaluation
+
+        };
+    };
+
+    // =========================================================================
     // REPORT AN OUTCOME TO THE DRIFT ENGINE
+    // =========================================================================
+    //
+    // rewardedOverride (optional 5th arg, boolean): bypasses the response-
+    // based rewarded computation entirely. Used by the separate-backfire
+    // follow-up, where "did she defuse it" is a different judgment than
+    // the request accept/reject vocabulary quite fits.
+    //
+    // Reward-tier magnitude scaling:
+    //     accept                                        full magnitude
+    //     reluctant_accept, score > 0.20 (a real margin)  full magnitude
+    //     reluctant_accept, score <= 0.20 (barely cleared) 0.25x magnitude -
+    //         still counts, per design decision: a bare-margin grudging
+    //         accept shouldn't be written off entirely, just weighted
+    //         much lighter than a clean one.
+    //     partial                                        0.5x magnitude
+    //     reject                                          not rewarded
+    //
     // =========================================================================
 
     AIH.MinigameService._reportOutcome = function(
         trait,
         direction,
         evaluation,
-        reason
+        reason,
+        options
     ) {
 
         var rewarded;
@@ -1367,16 +2163,21 @@ var AIH = AIH || {};
             return null;
         }
 
-        /*
-         * "partial" is still some degree of yielding to pressure - it
-         * should not count as a full zero the way an outright reject
-         * does. It counts as rewarded but at reduced magnitude, rather
-         * than being excluded from reinforcement entirely.
-         */
-        rewarded =
-            evaluation.response === "accept" ||
-            evaluation.response === "reluctant_accept" ||
-            evaluation.response === "partial";
+        options =
+            options || {};
+
+        if (typeof options.rewardedOverride === "boolean") {
+
+            rewarded =
+                options.rewardedOverride;
+
+        } else {
+
+            rewarded =
+                evaluation.response === "accept" ||
+                evaluation.response === "reluctant_accept" ||
+                evaluation.response === "partial";
+        }
 
         magnitude =
             AIH.MinigameService._clamp01(
@@ -1384,7 +2185,15 @@ var AIH = AIH || {};
                 Math.abs(evaluation.score) * 0.5
             );
 
-        if (evaluation.response === "partial") {
+        if (
+            evaluation.response === "reluctant_accept" &&
+            evaluation.score <= 0.20
+        ) {
+
+            magnitude =
+                magnitude * 0.25;
+
+        } else if (evaluation.response === "partial") {
 
             magnitude =
                 magnitude * 0.5;
@@ -1399,6 +2208,443 @@ var AIH = AIH || {};
                 reason: reason
             }
         );
+    };
+
+    // =========================================================================
+    // REGULAR FAMILIARITY FEEDBACK
+    // =========================================================================
+
+    AIH.MinigameService.modifyRegularFamiliarity = function(customer, outcomes) {
+
+        var wentWell;
+        var i;
+
+        if (
+            typeof AIH.Relationships === "undefined" ||
+            !AIH.Relationships.modifyAxis
+        ) {
+
+            return;
+        }
+
+        wentWell = false;
+
+        for (
+            i = 0;
+            i < outcomes.length;
+            i++
+        ) {
+
+            if (
+                outcomes[i].response === "accept" ||
+                outcomes[i].response === "reluctant_accept"
+            ) {
+
+                wentWell = true;
+            }
+        }
+
+        AIH.Relationships.modifyAxis(
+            customer.id,
+            "familiarity",
+            wentWell ? 4 : 1,
+            "tavern visit"
+        );
+
+        if (wentWell) {
+
+            AIH.Relationships.modifyAxis(
+                customer.id,
+                "trust",
+                2,
+                "tavern visit went well"
+            );
+        }
+    };
+
+    // =========================================================================
+    // FACTION REPUTATION FEEDBACK
+    // =========================================================================
+    //
+    // Per MINIGAME_HANDOFF.md Quick-Start step 7. Only regulars carry a
+    // stable enough identity for this in the plain-visit case; generated
+    // customers only affect faction reputation through a confrontation
+    // (see modifyPatronFactionReputationForConfrontation below), which is
+    // dramatic enough to be faction-worthy even for a one-off visitor.
+    // A double-refusal escalates into resolveConfrontation instead of
+    // being penalized here directly, to avoid double-counting the same
+    // event through two different reputation paths.
+    //
+    // =========================================================================
+
+    AIH.MinigameService.modifyRegularFactionReputation = function(customer, outcomes) {
+
+        var lastOutcome;
+        var wentWell;
+
+        if (
+            !customer.faction ||
+            typeof AIH.Reputation === "undefined" ||
+            !AIH.Reputation.modifyAxes
+        ) {
+
+            return;
+        }
+
+        if (
+            AIH.Reputation.hasFaction &&
+            !AIH.Reputation.hasFaction(customer.faction) &&
+            AIH.Reputation.addFaction
+        ) {
+
+            AIH.Reputation.addFaction(
+                customer.faction
+            );
+        }
+
+        lastOutcome =
+            outcomes[outcomes.length - 1];
+
+        wentWell =
+            lastOutcome.response === "accept" ||
+            lastOutcome.response === "reluctant_accept";
+
+        if (wentWell) {
+
+            AIH.Reputation.modifyAxes(
+                customer.faction,
+                { reputation: 1 },
+                "regular customer " +
+                    customer.name +
+                    " left the tavern pleased"
+            );
+        }
+    };
+
+    // =========================================================================
+    // FACTION REPUTATION FEEDBACK - CONFRONTATIONS
+    // =========================================================================
+    //
+    // Unlike modifyRegularFactionReputation above, this applies to ANY
+    // customer with a faction - including generated archetypes, since
+    // every archetype now carries one (see CUSTOMER_TYPES).
+    //
+    // =========================================================================
+
+    AIH.MinigameService.modifyPatronFactionReputationForConfrontation = function(
+        customer,
+        confrontationResult
+    ) {
+
+        var badOutcome;
+
+        if (
+            !customer.faction ||
+            typeof AIH.Reputation === "undefined" ||
+            !AIH.Reputation.modifyAxes
+        ) {
+
+            return;
+        }
+
+        if (
+            AIH.Reputation.hasFaction &&
+            !AIH.Reputation.hasFaction(customer.faction) &&
+            AIH.Reputation.addFaction
+        ) {
+
+            AIH.Reputation.addFaction(
+                customer.faction
+            );
+        }
+
+        badOutcome =
+            !!(
+                confrontationResult.backfire &&
+                !confrontationResult.backfire.heldGround
+            );
+
+        if (confrontationResult.wentWell) {
+
+            AIH.Reputation.modifyAxes(
+                customer.faction,
+                { reputation: 1, dominance: 1 },
+                "she handled a confrontation with " +
+                    customer.name +
+                    " (" +
+                    confrontationResult.chosenAction +
+                    ") without it getting away from her"
+            );
+
+        } else if (badOutcome) {
+
+            AIH.Reputation.modifyAxes(
+                customer.faction,
+                { reputation: -2 },
+                "a confrontation with " +
+                    customer.name +
+                    " got away from her at the tavern"
+            );
+        }
+    };
+
+    // =========================================================================
+    // EMERGENT "REPUTATION AMBITION" GOAL
+    // =========================================================================
+
+    AIH.MinigameService.REPUTATION_GOAL_THRESHOLD = 3;
+
+    AIH.MinigameService.REPUTATION_GOAL_DESCRIPTIONS = [
+        "Become known as the most composed hand the tavern has ever had.",
+        "Build a reputation none of the rowdier patrons dare test twice.",
+        "Prove, incident by incident, that she can handle anything the tavern throws at her."
+    ];
+
+    AIH.MinigameService._hasActiveReputationGoal = function() {
+
+        var goals;
+        var i;
+
+        if (
+            typeof AIH.Goals === "undefined" ||
+            !AIH.Goals.all
+        ) {
+
+            return false;
+        }
+
+        goals =
+            AIH.Goals.all();
+
+        for (
+            i = 0;
+            i < goals.length;
+            i++
+        ) {
+
+            if (
+                goals[i].category === "reputation_ambition" &&
+                (
+                    goals[i].status === "active" ||
+                    goals[i].status === "proposed"
+                )
+            ) {
+
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    AIH.MinigameService.checkReputationAmbitionGoal = function(wentWell) {
+
+        var state;
+
+        if (
+            !wentWell ||
+            typeof AIH.Goals === "undefined" ||
+            !AIH.Goals.create
+        ) {
+
+            return;
+        }
+
+        state =
+            AIH.MinigameService._ensure();
+
+        if (!state) {
+            return;
+        }
+
+        if (state.confrontationsHandledWell === undefined) {
+            state.confrontationsHandledWell = 0;
+        }
+
+        state.confrontationsHandledWell += 1;
+
+        if (
+            state.confrontationsHandledWell <
+            AIH.MinigameService.REPUTATION_GOAL_THRESHOLD
+        ) {
+
+            return;
+        }
+
+        if (AIH.MinigameService._hasActiveReputationGoal()) {
+            return;
+        }
+
+        AIH.Goals.create({
+
+            description:
+                AIH.MinigameService.REPUTATION_GOAL_DESCRIPTIONS[
+                    Math.floor(
+                        Math.random() *
+                        AIH.MinigameService.REPUTATION_GOAL_DESCRIPTIONS.length
+                    )
+                ],
+
+            category: "reputation_ambition",
+            origin: "emergent",
+            baseWeight: 0.5,
+
+            linkedValues: [
+                "status",
+                "pride"
+            ],
+
+            reason:
+                "she has handled " +
+                state.confrontationsHandledWell +
+                " tavern confrontations herself without losing control of them"
+        });
+    };
+
+    // =========================================================================
+    // HARASSMENT PATTERN -> EMERGENT "AVOID PATRON" GOAL
+    // =========================================================================
+    //
+    // Per MINIGAME_HANDOFF.md Section 5's own worked example. Tracks, per
+    // regular, how many visits ended in a hostile escalation (she
+    // refused, the customer pushed a follow-up anyway, and she refused
+    // that too). Only fires for regulars - a stable identity to attach
+    // "avoid this patron" to does not exist for a one-off generated
+    // customer. Deduplicates against an existing active/proposed goal for
+    // the same customer.
+    //
+    // =========================================================================
+
+    AIH.MinigameService.HARASSMENT_GOAL_THRESHOLD = 3;
+
+    AIH.MinigameService._incidentCounters = function() {
+
+        var state;
+
+        state =
+            AIH.MinigameService._ensure();
+
+        if (!state) {
+            return null;
+        }
+
+        if (!state.harassmentIncidents) {
+            state.harassmentIncidents = {};
+        }
+
+        return state.harassmentIncidents;
+    };
+
+    AIH.MinigameService._hasActiveAvoidGoal = function(npcId) {
+
+        var goals;
+        var i;
+
+        if (
+            typeof AIH.Goals === "undefined" ||
+            !AIH.Goals.all
+        ) {
+
+            return false;
+        }
+
+        goals =
+            AIH.Goals.all();
+
+        for (
+            i = 0;
+            i < goals.length;
+            i++
+        ) {
+
+            if (
+                goals[i].relatedNpcId === npcId &&
+                goals[i].category === "avoid_patron" &&
+                (
+                    goals[i].status === "active" ||
+                    goals[i].status === "proposed"
+                )
+            ) {
+
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    AIH.MinigameService.checkHarassmentPattern = function(customer, incidentType, outcomes) {
+
+        var counters;
+        var wasHostileEscalation;
+
+        if (
+            typeof AIH.Goals === "undefined" ||
+            !AIH.Goals.create
+        ) {
+
+            return;
+        }
+
+        counters =
+            AIH.MinigameService._incidentCounters();
+
+        if (!counters) {
+            return;
+        }
+
+        wasHostileEscalation =
+            outcomes.length > 1 &&
+            outcomes[0].response === "reject" &&
+            outcomes[1].response === "reject";
+
+        if (!wasHostileEscalation) {
+            return;
+        }
+
+        counters[customer.id] =
+            (counters[customer.id] || 0) + 1;
+
+        if (
+            counters[customer.id] <
+            AIH.MinigameService.HARASSMENT_GOAL_THRESHOLD
+        ) {
+
+            return;
+        }
+
+        if (AIH.MinigameService._hasActiveAvoidGoal(customer.id)) {
+            return;
+        }
+
+        AIH.Goals.create({
+
+            description:
+                "Avoid working when " +
+                customer.name +
+                " is in.",
+
+            category: "avoid_patron",
+            origin: "emergent",
+            baseWeight: 0.55,
+
+            linkedValues: [
+                "freedom",
+                "dignity"
+            ],
+
+            relatedNpcId:
+                customer.id,
+
+            relatedFaction:
+                customer.faction || null,
+
+            reason:
+                customer.name +
+                " has repeatedly pushed past a refusal (" +
+                incidentType +
+                ") without taking no for an answer."
+        });
     };
 
     // =========================================================================
@@ -1467,13 +2713,6 @@ var AIH = AIH || {};
             return null;
         }
 
-        if (template.kind === "bouncer") {
-
-            return AIH.MinigameService.resolveBouncerIncident(
-                incidentType
-            );
-        }
-
         container =
             AIH.MinigameService._ensure();
 
@@ -1499,6 +2738,14 @@ var AIH = AIH || {};
 
         if (!customer) {
             return null;
+        }
+
+        if (template.kind === "bouncer") {
+
+            return AIH.MinigameService.resolveConfrontation(
+                customer,
+                incidentType
+            );
         }
 
         return AIH.MinigameService.resolveRequestIncident(
@@ -1615,6 +2862,10 @@ var AIH = AIH || {};
                     return AIH.MinigameService.spawnCustomer(archetype);
                 },
 
+                spawnRegular: function(regularId) {
+                    return AIH.MinigameService.spawnRegular(regularId);
+                },
+
                 serveCustomer: function(customerId) {
                     return AIH.MinigameService.serveCustomer(customerId);
                 },
@@ -1672,6 +2923,17 @@ var AIH = AIH || {};
 
                 AIH.MinigameService.spawnCustomer(
                     (args && args.archetype) || "friendly"
+                );
+            }
+        );
+
+        PluginManager.registerCommand(
+            "AIH_Minigame_Service",
+            "SpawnRegular",
+            function(args) {
+
+                AIH.MinigameService.spawnRegular(
+                    (args && args.regularId) || "old_grum"
                 );
             }
         );
