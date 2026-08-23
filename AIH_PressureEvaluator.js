@@ -561,6 +561,74 @@ var AIH = AIH || {};
             AIH.PressureEvaluator._number(situation.embarrassment, 0) *
             0.20;
 
+        /*
+         * mercy/approvalSeeking, added when the trait-validity audit found
+         * these were being reinforced by PersonalityDrift but never read
+         * anywhere. There is no dedicated "harm inflicted on someone
+         * else" situation field yet, so mercy uses danger as the closest
+         * available proxy for "how aggressive/forceful this option is" -
+         * low mercy (cruelty) makes aggressive/dangerous options more
+         * appealing, not less.
+         */
+        pressure +=
+            (
+                0.5 -
+                AIH.PressureEvaluator._number(personality.mercy, 0.5)
+            ) *
+            AIH.PressureEvaluator._number(situation.danger, 0) *
+            0.20;
+
+        /*
+         * approvalSeeking is a general disposition to please, not tied to
+         * a specific situation field the way the others are - it nudges
+         * willingness up across the board rather than in response to one
+         * particular cost.
+         */
+        pressure +=
+            (
+                AIH.PressureEvaluator._number(personality.approvalSeeking, 0.5) -
+                0.5
+            ) *
+            0.15;
+
+        /*
+         * trust/defiance, added when the trait-validity audit found these
+         * were being reinforced by PersonalityDrift but never read
+         * anywhere. High trust makes a dangerous-seeming situation read
+         * as less alarming (less suspicious of the source); high
+         * defiance makes dignity costs sting less (caring less what an
+         * authority figure thinks of her).
+         *
+         * Deliberately placed here (willingness side, dampened by
+         * Config.personalityWeight) rather than directly in the
+         * resistance formula below. A first attempt put these terms
+         * directly into resistance, undamped - even a very small
+         * coefficient there was enough to push a candidate's score
+         * across a response-tier boundary and collapse the ENTIRE
+         * confrontation action space onto a single option regardless of
+         * archetype or incident type, the same failure mode this whole
+         * fix exists to solve. Found by testing the actual action
+         * distribution after the change, not assumed from an isolated
+         * direction/magnitude check alone - a coefficient can look
+         * correctly-signed and modestly-sized in isolation while still
+         * being catastrophic once it interacts with tier-based ranking.
+         */
+        pressure +=
+            (
+                AIH.PressureEvaluator._number(personality.trust, 0.5) -
+                0.5
+            ) *
+            AIH.PressureEvaluator._number(situation.danger, 0) *
+            0.10;
+
+        pressure +=
+            (
+                AIH.PressureEvaluator._number(personality.defiance, 0.5) -
+                0.5
+            ) *
+            AIH.PressureEvaluator._number(situation.dignityCost, 0) *
+            0.10;
+
         return pressure;
     };
 

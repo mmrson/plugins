@@ -52,6 +52,22 @@
  *
  * ============================================================================
  *
+ * TRAIT-SELECTION AUDIT (this pass)
+ *
+ * Every driftTrait below has been checked against the ACTUAL fields
+ * AIH_PressureEvaluator.js's _personalityPressure()/resistance formula
+ * read (post the mercy/trust/defiance/approvalSeeking patch), and against
+ * whether that specific template's own field VALUES leave that trait any
+ * real room to matter (a trait can be "read" in general and still be
+ * mechanically dead for one specific template if the relevant field is
+ * 0, or if something else - usually a large reward - already saturates
+ * willingness to its clamp ceiling). Where a template's own escalation/
+ * danger shape, not its trait choice, was the actual problem, the fix is
+ * to the situation/escalation design, not a trait swap - see "ignore"
+ * and "customer_demands_priority" below.
+ *
+ * ============================================================================
+ *
  * @command StartShift
  * @text Start Shift
  * @desc Begins a new service shift.
@@ -104,7 +120,7 @@ var AIH = AIH || {};
 
     AIH.MinigameService = AIH.MinigameService || {};
 
-    AIH.MinigameService.VERSION = "0.1.0";
+    AIH.MinigameService.VERSION = "0.1.1";
 
     AIH.MinigameService.SCHEMA_VERSION = 1;
 
@@ -228,23 +244,6 @@ var AIH = AIH || {};
     // =========================================================================
     // CUSTOMER ARCHETYPES (for generated/filler customers)
     // =========================================================================
-    //
-    // A small, representative set rather than one entry per adjective in
-    // the original brainstorm - "impatient" and "difficult" behave
-    // similarly enough mechanically to share an archetype with different
-    // flavor text, for example. Add more here as data; do not add new code
-    // paths per archetype.
-    //
-    // Each archetype is a set of RANGES, not fixed values - a spawned
-    // customer randomizes within these, so two "impatient" customers don't
-    // pressure her identically. persistence/publicity/authority are the
-    // original design doc's own pressure vocabulary (see
-    // MINIGAME_HANDOFF.md Section 7's mapping note) and get folded into
-    // embarrassment/dignityCost/prideCost when a situation is built (see
-    // _buildRequestSituation) - do not read them as pre-normalized
-    // situation fields directly.
-    //
-    // =========================================================================
 
     AIH.MinigameService.CUSTOMER_TYPES = {
 
@@ -333,19 +332,6 @@ var AIH = AIH || {};
     // =========================================================================
     // NAMED REGULARS (authored)
     // =========================================================================
-    //
-    // Fixed customers with a stable pressure profile and an
-    // AIH.Relationships entry, so familiarity built up over repeat visits
-    // actually persists and feeds back in (see _regularPressureOptions
-    // below). Values here are still just DATA fed into the same evaluator
-    // - nothing here decides an outcome directly.
-    //
-    // "CityGuard" is not one of AIH.Reputation's default factions - it is
-    // registered dynamically on first use via AIH.Reputation.addFaction(),
-    // the module's own sanctioned way of adding a faction, not by editing
-    // AIH_Reputation.js.
-    //
-    // =========================================================================
 
     AIH.MinigameService.REGULARS = {
 
@@ -397,12 +383,6 @@ var AIH = AIH || {};
     //
     //     complaint       routed to the dish-alteration system
     //
-    // baseSituation mirrors AIH_Minigame_Bathhouse.js's REQUEST_TEMPLATES
-    // shape - danger/embarrassment/dignityCost/freedomCost/modestyCost/
-    // prideCost are the BASE values before _buildRequestSituation folds
-    // in the customer's publicity (-> embarrassment) and authority
-    // (-> dignityCost/prideCost multiplier).
-    //
     // =========================================================================
 
     AIH.MinigameService.INCIDENT_TYPES = {
@@ -411,9 +391,24 @@ var AIH = AIH || {};
             kind: "request",
             trait: "assertiveness",
             direction: "increase",
+            /*
+             * TRAIT AUDIT: assertiveness is genuinely read (it's a real
+             * +assertiveness*embarrassment*0.15 willingness term) - the
+             * issue flagged in review was never that this trait doesn't
+             * matter, it's that this template's reward (randomized from
+             * the triggering customer's own rewardRange, often
+             * substantial) can saturate willingness to its ceiling on
+             * its own, leaving assertiveness nothing further to
+             * contribute for THAT specific instance. Per explicit
+             * direction, the fix for that is giving this template a
+             * little genuine escalation/danger headroom of its own
+             * (danger 0 -> 0.08: an impatient, demanding customer has a
+             * small real chance of becoming a scene, not just an
+             * embarrassment/reward tradeoff), not swapping the trait.
+             */
             baseSituation: {
                 severity: "normal",
-                danger: 0,
+                danger: 0.08,
                 embarrassment: 0.10,
                 dignityCost: 0.05,
                 freedomCost: 0.10,
@@ -439,14 +434,29 @@ var AIH = AIH || {};
 
         pressure_after_refusal: {
             kind: "request",
-            trait: "approvalSeeking",
-            direction: "increase",
             /*
-             * This is the explicit "refusal is not necessarily the end"
-             * mechanic - see resolveRequestIncident below. It is
-             * generated as a FOLLOW-UP after a "reject" response, not
-             * spawned independently.
+             * TRAIT AUDIT: inhibition is the primary lever - it directly
+             * targets this template's dominant, tied costs
+             * (embarrassment 0.30 + modestyCost 0.30, jointly weighted
+             * at 0.30 in _personalityPressure). approvalSeeking is now
+             * genuinely read too (post-patch), but only as a flat,
+             * situation-independent +/-0.15 nudge - it doesn't respond
+             * to THIS situation's specific shape the way inhibition
+             * does. Per explicit direction, approvalSeeking should still
+             * have a real, measurable role here - especially when a
+             * genuinely trusted source is the one applying the
+             * pressure - so this template now reports BOTH: inhibition
+             * as the primary boundary-relevant drift, and a secondary,
+             * smaller approvalSeeking reinforcement scaled up when the
+             * source is a trusted regular. See resolveOrder/
+             * resolveRequestIncident below for where the second call
+             * happens (it needs the customer/relationship data this
+             * template object doesn't have).
              */
+            trait: "inhibition",
+            direction: "decrease",
+            secondaryTrait: "approvalSeeking",
+            secondaryDirection: "increase",
             isFollowUp: true,
             baseSituation: {
                 severity: "rare",
@@ -461,6 +471,29 @@ var AIH = AIH || {};
 
         large_tip: {
             kind: "request",
+            /*
+             * TRAIT AUDIT - FLAGGED, NOT CONFIDENTLY RESOLVED: this
+             * template's reward is randomized from the customer's own
+             * rewardRange and is frequently large (see e.g. "wealthy",
+             * rewardRange up to 300) - exactly the saturation shape that
+             * made assertiveness/attentionSeeking test as inert on
+             * customer_demands_priority. approvalSeeking is real
+             * post-patch, but it's a flat +/-0.15 willingness nudge with
+             * no situation-specific hook, and if reward alone is already
+             * pushing willingness to its clamp ceiling for a "large tip"
+             * template BY DEFINITION, that flat nudge may still be
+             * contributing nothing in practice for the customers this
+             * actually fires for most (the wealthy/generous archetypes).
+             * Kept as approvalSeeking for now, on the theory that this
+             * template's smaller-reward customers (friendly, at the low
+             * end of [20,60]) DO leave headroom below the ceiling and
+             * are exactly where a large-for-them tip is most likely to
+             * read as a genuine surprise. Left here as a flag rather
+             * than a confident swap - this needs an actual frozen-
+             * situation test across the customer archetypes that
+             * trigger it before it's settled either way, and that test
+             * hasn't been run.
+             */
             trait: "approvalSeeking",
             direction: "increase",
             baseSituation: {
@@ -476,6 +509,13 @@ var AIH = AIH || {};
 
         suspected_theft: {
             kind: "request",
+            /*
+             * TRAIT AUDIT: trust is now genuinely read (post-patch) and
+             * this template's danger (0.1) is nonzero, so trust's
+             * -0.5..0.5 * danger * 0.10 term is small but real and
+             * correctly signed - low trust makes a suspicious situation
+             * read as more alarming. Confirmed correct.
+             */
             trait: "trust",
             direction: "decrease",
             baseSituation: {
@@ -516,25 +556,14 @@ var AIH = AIH || {};
     // values - _buildBouncerSituation scales them against the incident's
     // own severity.
     //
-    // IMPORTANT - "separate" is not actually the safe default it looks
-    // like. Pulling two riled-up patrons apart without otherwise engaging
-    // them tends to redirect their attention onto HER instead of each
-    // other. If she then declines that attention, it can escalate into
-    // exactly the danger she was trying to avoid. This is modeled as a
-    // genuine backfire chain (see _resolveSeparateBackfire), not as
-    // a static pressure value - so "separate" only reads as low-risk in
-    // the moment, and its real expected risk depends on what she does
-    // next, which in turn depends on her actual current personality
-    // (inhibition/approvalSeeking). A heroine who has drifted toward
-    // higher approvalSeeking will defuse the follow-up safely more often;
-    // a heroine who has not will refuse more often and escalate more
-    // often. "entertain" is the direct, immediately-safe alternative -
-    // choosing to defuse by engaging the patrons rather than separating
-    // them - which costs her personally (boundary-wise) rather than
-    // physically. "intervene_physically" remains the single highest
-    // immediate-danger option, but unlike a failed "separate" it resolves
-    // the incident decisively rather than risking a worse escalation
-    // afterward.
+    // "ignore" carries NO driftTrait of its own on purpose - see
+    // _resolveIgnoreAftermath below. Per explicit direction, the problem
+    // with "ignore" was never which stat it targeted - a zero-danger,
+    // zero-modestyCost, barely-any-cost situation gives EVERY personality
+    // trait basically nothing to read regardless of which one is picked.
+    // The actual missing piece was that ignoring someone has no
+    // consequence/escalation path at all. That's now modeled as its own
+    // aftermath resolution, exactly like "separate"'s backfire.
     //
     // =========================================================================
 
@@ -544,7 +573,7 @@ var AIH = AIH || {};
             action: "ignore",
             danger: 0.0, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.10, reward: 0,
-            trait: "mercy", direction: "decrease"
+            trait: null, direction: null
         },
 
         {
@@ -565,15 +594,14 @@ var AIH = AIH || {};
 
         {
             action: "separate",
-            /*
-             * Base profile only - the real risk lives in the follow-up
-             * chain (_resolveSeparateBackfire), not here. Kept
-             * deliberately non-trivial (not free) even before that chain
-             * runs, since getting between two upset patrons is not
-             * actually costless.
-             */
             danger: 0.15, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.15, reward: 0,
+            /*
+             * TRAIT AUDIT: assertiveness confirmed correct per explicit
+             * direction. This is the direct, boundary-enforcing act of
+             * physically inserting herself between two patrons - the
+             * same category of action as "warn"/"ask_to_leave".
+             */
             trait: "assertiveness", direction: "increase",
             fitFor: ["someone_bothering_patron"]
         },
@@ -582,7 +610,17 @@ var AIH = AIH || {};
             action: "ask_to_leave",
             danger: 0.10, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.15, reward: 0,
-            trait: "defiance", direction: "increase",
+            /*
+             * TRAIT AUDIT: assertiveness confirmed correct per explicit
+             * direction (reverted from an earlier "defiance" attempt -
+             * this template's dignityCost is 0.0, so defiance's
+             * dignityCost-scaled term is mechanically dead here
+             * regardless of the patch; assertiveness is both genuinely
+             * live via embarrassment and the better narrative fit -
+             * directly telling someone to leave is assertive
+             * boundary-enforcement, not defiance of authority).
+             */
+            trait: "assertiveness", direction: "increase",
             fitFor: ["customer_refuses_to_leave"]
         },
 
@@ -590,14 +628,36 @@ var AIH = AIH || {};
             action: "call_authority",
             danger: 0.05, prideCost: 0.10, dignityCost: 0.05,
             embarrassment: 0.05, reward: 0,
-            trait: "defiance", direction: "decrease",
-            fitFor: ["fight_starts"]
+            /*
+             * TRAIT AUDIT: per explicit direction, calling authority is
+             * not defiance (arguably closer to its opposite) - it's an
+             * admission she couldn't handle the situation herself, which
+             * should cost pride regardless of how the call itself turns
+             * out. Unlike every other bouncer response, this one is
+             * applied with rewardedOverride:true in resolveConfrontation
+             * below (mirroring Bathhouse's call_for_help, which eroded
+             * pride "even on the success path") - the cost is for
+             * needing to call at all, not contingent on the evaluator's
+             * response tier.
+             */
+            trait: "pride", direction: "decrease"
         },
 
         {
             action: "intervene_physically",
             danger: 0.55, prideCost: 0.0, dignityCost: 0.0,
             embarrassment: 0.20, reward: 0,
+            /*
+             * TRAIT AUDIT: mercy confirmed as the more logical primary
+             * lever per explicit direction (danger 0.55 is large enough
+             * for mercy's -danger term to be genuinely live, not
+             * trivially zero). Per explicit direction, this response
+             * ALSO now carries its own failure-specific consequence: if
+             * the confrontation mishap roll (CONFRONTATION_MISHAP_CHANCE,
+             * unchanged) fires, pride takes a separate, large hit on top
+             * of mercy's drift - handled in resolveConfrontation below,
+             * not here (needs the mishap roll result).
+             */
             trait: "mercy", direction: "decrease",
             fitFor: ["fight_starts"]
         },
@@ -607,11 +667,9 @@ var AIH = AIH || {};
             danger: 0.05, prideCost: 0.25, dignityCost: 0.30,
             embarrassment: 0.10, reward: 60,
             /*
-             * pride, not trust - taking a bribe is a hit to her own
-             * integrity/self-respect, not to how much she trusts other
-             * people. Reassigned during the trait-validity audit; trust
-             * was both mechanically inert at the time (fixed now) and a
-             * narrative mismatch regardless.
+             * TRAIT AUDIT: pride confirmed correct, unanimous across
+             * every review pass. Taking a bribe erodes her own
+             * integrity/self-respect, not her trust in other people.
              */
             trait: "pride", direction: "decrease"
         },
@@ -628,14 +686,6 @@ var AIH = AIH || {};
 
     // =========================================================================
     // DISH ALTERATION SYSTEM
-    // =========================================================================
-    //
-    // A complaint ("this tastes wrong") is generated with an underlying
-    // ground truth the heroine does not automatically know. She can
-    // taste/smell/ask the kitchen/believe/distrust the customer - what she
-    // actually learns depends on which investigation she chooses, not on
-    // the ground truth being handed to her.
-    //
     // =========================================================================
 
     AIH.MinigameService.ALTERATION_TYPES = [
@@ -695,14 +745,6 @@ var AIH = AIH || {};
         };
     };
 
-    /*
-     * Resolves a food complaint. "investigation" is what she chooses to do
-     * about it - this shapes what she LEARNS (a belief), separately from
-     * what actually happened (dishTruth).
-     *
-     * investigation: "taste" | "smell" | "ask_kitchen" | "believe_customer"
-     *                | "distrust_customer"
-     */
     AIH.MinigameService.resolveComplaint = function(
         customerId,
         investigation
@@ -723,10 +765,6 @@ var AIH = AIH || {};
             investigation === "smell"
         ) {
 
-            /*
-             * Direct investigation is reliable but not perfect - severe
-             * alterations are always caught, mild ones sometimes slip by.
-             */
             correct =
                 dishTruth.amount === "extreme" ||
                 dishTruth.amount === "high" ||
@@ -734,10 +772,6 @@ var AIH = AIH || {};
 
         } else if (investigation === "ask_kitchen") {
 
-            /*
-             * The kitchen is reliable about its own mistakes and dishonest
-             * about customer-caused ones.
-             */
             correct =
                 dishTruth.addedBy !== "customer";
 
@@ -752,13 +786,6 @@ var AIH = AIH || {};
                 !dishTruth.complaintValid;
         }
 
-        /*
-         * What she concludes becomes a belief about THIS customer type of
-         * situation, not a certainty about this one dish - matching how
-         * AIH.Beliefs already works. Repeated correct/incorrect
-         * investigations shift her trust in a given investigation method
-         * and in customer complaints generally.
-         */
         if (
             typeof AIH.Beliefs !== "undefined" &&
             AIH.Beliefs.add
@@ -798,11 +825,6 @@ var AIH = AIH || {};
             }
         }
 
-        /*
-         * She can discover she likes an alteration she wasn't expecting
-         * to. This is intrinsic-preference reinforcement, not
-         * reward/pressure-driven, per MINIGAME_HANDOFF.md Section 8.
-         */
         if (
             dishTruth.altered &&
             dishTruth.amount === "mild" &&
@@ -958,20 +980,6 @@ var AIH = AIH || {};
     // =========================================================================
     // CUSTOMER SPAWNING
     // =========================================================================
-    //
-    // Two-tier sourcing, mirroring AIH_Minigame_Bathhouse.js: spawnCustomer
-    // generates a one-off customer from an archetype's ranges (so two
-    // "impatient" customers don't pressure her identically); spawnRegular
-    // pulls in a named, fixed-profile customer from REGULARS and gives
-    // them a persistent AIH.Relationships entry, which is what lets
-    // familiarity actually accumulate and feed back in (see
-    // _regularPressureOptions below).
-    //
-    // Both converge on the same customer shape:
-    //   { kind: "generated"|"regular", id, name, faction, persistence,
-    //     publicity, authority, rewardRange, served }
-    //
-    // =========================================================================
 
     AIH.MinigameService._randomBetween = function(min, max) {
 
@@ -1124,17 +1132,6 @@ var AIH = AIH || {};
     // =========================================================================
     // REGULAR RELATIONSHIP TRACKING
     // =========================================================================
-    //
-    // Per MINIGAME_HANDOFF.md Section 7 - "your minigame's equivalent [of
-    // livestream viewer favor/trust/familiarity], if it has one, goes
-    // here." A regular's familiarity is read back in as domainPressure (a
-    // regular she knows well applies more comfortable, less alarming
-    // pressure) and trust as an attachmentDiscount (someone she trusts
-    // gets a little slack on resistance). This calls straight into
-    // AIH.Relationships - it does not invent a second relationship
-    // system.
-    //
-    // =========================================================================
 
     AIH.MinigameService.ensureRegularRelationship = function(customer) {
 
@@ -1192,14 +1189,6 @@ var AIH = AIH || {};
 
         return {
 
-            /*
-             * familiarity is stored -100..100 (see
-             * AIH.Relationships._clampFamiliarity) - scaled down here into
-             * a raw pressure term the same way the livestream integration
-             * uses domainPressure. Deliberately gentle: a regular's
-             * familiarity should nudge things, not dominate the
-             * evaluation.
-             */
             domainPressure:
                 familiarity * 0.15,
 
@@ -1210,16 +1199,38 @@ var AIH = AIH || {};
         };
     };
 
+    /*
+     * Is this customer a "trusted party" in the sense pressure_after_
+     * refusal's secondary approvalSeeking drift cares about? A regular
+     * with meaningfully positive trust counts; a generated one-off
+     * customer, or a regular with no real trust built up yet, does not.
+     */
+    AIH.MinigameService._isTrustedSource = function(customer) {
+
+        var relationship;
+
+        if (
+            !customer ||
+            customer.kind !== "regular" ||
+            typeof AIH.Relationships === "undefined" ||
+            !AIH.Relationships.get
+        ) {
+
+            return false;
+        }
+
+        relationship =
+            AIH.Relationships.get(customer.id);
+
+        if (!relationship) {
+            return false;
+        }
+
+        return (Number(relationship.trust) || 0) >= 30;
+    };
+
     // =========================================================================
     // AUTHORITY FACTOR
-    // =========================================================================
-    //
-    // Mirrors AIH_Minigame_Bathhouse.js's authorityFactor exactly: a
-    // customer with real authority makes dignity/pride costs weigh more,
-    // not less - being condescended to by someone who genuinely can make
-    // her life difficult stings more than the identical words from a
-    // nobody.
-    //
     // =========================================================================
 
     AIH.MinigameService._authorityFactor = function(authority) {
@@ -1230,15 +1241,6 @@ var AIH = AIH || {};
 
     // =========================================================================
     // BUILD A REQUEST SITUATION FROM A CUSTOMER + INCIDENT
-    // =========================================================================
-    //
-    // publicity folds into embarrassment directly; authority scales
-    // dignityCost/prideCost via _authorityFactor. persistence is
-    // deliberately NOT folded in here - it drives escalation probability
-    // and confrontation intensity instead (see resolveRequestIncident and
-    // _confrontationIntensity), not the base situation's pressure fields,
-    // matching AIH_Minigame_Bathhouse.js's own division of responsibility.
-    //
     // =========================================================================
 
     AIH.MinigameService._buildRequestSituation = function(
@@ -1319,23 +1321,6 @@ var AIH = AIH || {};
     // =========================================================================
     // GENERIC "CHOOSE BEST OF SEVERAL CANDIDATES" HELPER
     // =========================================================================
-    //
-    // See the file header for why this exists. Any minigame framework
-    // needing a multi-option decision can reuse this exact pattern.
-    //
-    // candidates: array of { action, situation, meta, options }
-    //             "options" is the same PressureEvaluator options object
-    //             (domainPressure/domainResistance/attachmentDiscount) any
-    //             other evaluate() call would take - typically the same
-    //             _regularPressureOptions(customer) result passed to every
-    //             candidate so a regular's familiarity/trust applies
-    //             consistently across all of them, not just one.
-    //
-    // Returns { action, evaluation, meta } for the winner, ranked first by
-    // response tier (accept > reluctant_accept > partial > reject), then
-    // by score within a tier.
-    //
-    // =========================================================================
 
     AIH.MinigameService.RESPONSE_RANK = {
         accept: 3,
@@ -1393,16 +1378,6 @@ var AIH = AIH || {};
     // =========================================================================
     // CONFRONTATION INTENSITY
     // =========================================================================
-    //
-    // Mirrors AIH_Minigame_Bathhouse.js's _confrontationIntensity exactly:
-    // how charged this specific confrontation is, driven by the specific
-    // customer's persistence and authority rather than a flat per-
-    // incident-type severity tier. Reused across every candidate
-    // response's situation AND the backfire/mishap rolls below, so a
-    // pushy, high-authority customer makes the whole confrontation more
-    // volatile in every direction at once, not just one.
-    //
-    // =========================================================================
 
     AIH.MinigameService._confrontationIntensity = function(customer) {
 
@@ -1413,15 +1388,6 @@ var AIH = AIH || {};
 
     // =========================================================================
     // BUILD A CONFRONTATION SITUATION FOR ONE CANDIDATE RESPONSE
-    // =========================================================================
-    //
-    // Combines Service's own fitFor bonus/penalty (does this response
-    // actually suit THIS incident type) with the customer-driven intensity
-    // multiplier (how charged is THIS specific confrontation) - the two
-    // are independent axes: fitFor differentiates WHICH response makes
-    // sense for a given incident, intensity differentiates HOW MUCH any of
-    // them cost for a given customer.
-    //
     // =========================================================================
 
     AIH.MinigameService._buildBouncerSituation = function(
@@ -1450,16 +1416,6 @@ var AIH = AIH || {};
                 customer && customer.authority
             );
 
-        /*
-         * fitFor makes different bouncer responses actually differentiate
-         * per incident type, rather than the same profiles always
-         * ranking the same way regardless of what is happening. A response
-         * with no fitFor list is general-purpose and unaffected either
-         * way. A response WITH a fitFor list is a targeted response: it
-         * gets a bonus when used for an incident it's suited to, and a
-         * penalty (it reads as overreacting or underreacting) when used
-         * for one it is not.
-         */
         isTargeted =
             Array.isArray(responseOption.fitFor);
 
@@ -1539,14 +1495,6 @@ var AIH = AIH || {};
     // =========================================================================
     // SERVE CUSTOMER (MUNDANE BASELINE PATH)
     // =========================================================================
-    //
-    // The surface activity, per MINIGAME_HANDOFF.md Section 8's two-layer
-    // design: most visits are not incidents. A customer orders, is
-    // served, tips something roughly in line with their archetype, and
-    // leaves. Incidents (triggerIncident) are the periodic exception, not
-    // the default path - call this for the ordinary case.
-    //
-    // =========================================================================
 
     AIH.MinigameService.serveCustomer = function(customerId) {
 
@@ -1617,14 +1565,6 @@ var AIH = AIH || {};
     // =========================================================================
     // RESOLVE A SINGLE REQUEST (evaluate + report outcome)
     // =========================================================================
-    //
-    // A single situation, evaluated once. resolveRequestIncident (below)
-    // is the public entry point that chains a primary request, its
-    // follow-up, and an eventual confrontation together the way
-    // AIH_Minigame_Bathhouse.js's resolveVisit does; this is the single-
-    // situation building block that does not know about that chain.
-    //
-    // =========================================================================
 
     AIH.MinigameService._resolveRequest = function(
         customer,
@@ -1671,6 +1611,43 @@ var AIH = AIH || {};
             "waitressing: " + incidentType + " with " + customer.name
         );
 
+        /*
+         * pressure_after_refusal's secondary approvalSeeking drift - per
+         * explicit direction, this should have a real, measurable
+         * outcome, and especially so when a trusted party is the one
+         * applying the pressure. Scaled up (not just present/absent) for
+         * a trusted source rather than an on/off toggle, so the more she
+         * trusts who's pushing, the more this specific drift registers.
+         */
+        if (
+            template.secondaryTrait &&
+            (
+                evaluation.response === "accept" ||
+                evaluation.response === "reluctant_accept" ||
+                evaluation.response === "partial"
+            )
+        ) {
+
+            AIH.MinigameService._reportOutcome(
+                template.secondaryTrait,
+                template.secondaryDirection,
+                evaluation,
+                "waitressing: " + incidentType + " with " + customer.name +
+                " (secondary approvalSeeking pass" +
+                (
+                    AIH.MinigameService._isTrustedSource(customer) ?
+                        ", trusted source - full weight)" :
+                        ", untrusted/generated source - reduced weight)"
+                ),
+                {
+                    magnitudeMultiplier:
+                        AIH.MinigameService._isTrustedSource(customer) ?
+                            1.0 :
+                            0.4
+                }
+            );
+        }
+
         return {
 
             incidentType: incidentType,
@@ -1682,15 +1659,6 @@ var AIH = AIH || {};
 
     // =========================================================================
     // RESOLVE A REQUEST-KIND INCIDENT (public entry point)
-    // =========================================================================
-    //
-    // Mirrors AIH_Minigame_Bathhouse.js's resolveVisit: a primary request,
-    // a follow-up if it's refused, and - if the follow-up is ALSO refused -
-    // an escalation into a genuine confrontation (resolveConfrontation),
-    // rather than the interaction just quietly ending. This is the
-    // explicit "refusal is not necessarily the end" mechanic from
-    // MINIGAME_HANDOFF.md Section 8.
-    //
     // =========================================================================
 
     AIH.MinigameService.resolveRequestIncident = function(
@@ -1756,11 +1724,6 @@ var AIH = AIH || {};
             }
         }
 
-        /*
-         * Two refusals in a row stops being "a request she declined" and
-         * becomes an actual confrontation she has to handle - see the
-         * CONFRONTATION SYSTEM below.
-         */
         if (
             followUp &&
             followUp.evaluation.response === "reject"
@@ -1813,28 +1776,146 @@ var AIH = AIH || {};
     // =========================================================================
     // CONFRONTATION SYSTEM (chooseBest across candidate responses)
     // =========================================================================
-    //
-    // BOUNCER_RESPONSES's comment explains the design intent behind each
-    // option. Two responses carry their own extra downside beyond their
-    // base situation cost, mirroring AIH_Minigame_Bathhouse.js's proven
-    // confrontation system exactly:
-    //
-    //     separate     can backfire - the separated patrons redirect their
-    //                  attention onto her, and if she declines THAT, it
-    //                  escalates into a forced, more dangerous
-    //                  confrontation. Chance scales with the customer's
-    //                  persistence, same as Bathhouse's deflect_calmly.
-    //
-    //     intervene_physically   carries its own baked-in mishap chance -
-    //                  even when it is the chosen response, it can still
-    //                  go wrong. This does not change the response tier;
-    //                  it is recorded as an extra fact about how it went.
-    //
-    // =========================================================================
 
     AIH.MinigameService.CONFRONTATION_BACKFIRE_BASE_CHANCE = 0.30;
 
     AIH.MinigameService.CONFRONTATION_MISHAP_CHANCE = 0.35;
+
+    /*
+     * "ignore" aftermath - per explicit direction, ignoring someone has
+     * three real possible outcomes instead of a single flat cost:
+     *   - it escalates: the ignored customer/situation turns angry and
+     *     physical, forcing a real confrontation (intervene_physically
+     *     or call_authority - the same two "things have gone physical"
+     *     candidates _resolveSeparateBackfire already uses).
+     *   - the customer leaves angry (no escalation, mild reputation-
+     *     relevant flavor, no personality drift - not a boundary event).
+     *   - the customer leaves disappointed/sad (same - flavor only).
+     * Escalation chance scales with the customer's persistence, same
+     * shape as separate's backfire.
+     */
+    AIH.MinigameService.IGNORE_ESCALATION_BASE_CHANCE = 0.25;
+
+    AIH.MinigameService._resolveIgnoreAftermath = function(
+        customer,
+        contextIncidentType,
+        options,
+        intensity
+    ) {
+
+        var chance;
+        var escalates;
+        var escalation;
+        var escalationHeldGround;
+        var mildOutcome;
+
+        chance =
+            AIH.MinigameService._clamp01(
+                AIH.MinigameService.IGNORE_ESCALATION_BASE_CHANCE +
+                AIH.MinigameService._number(customer.persistence, 0.3) * 0.35
+            );
+
+        escalates =
+            Math.random() < chance;
+
+        if (!escalates) {
+
+            mildOutcome =
+                Math.random() < 0.5 ?
+                    "customer_leaves_angry" :
+                    "customer_leaves_disappointed";
+
+            return {
+                escalated: false,
+                mildOutcome: mildOutcome,
+                heldGround: true
+            };
+        }
+
+        /*
+         * It escalated to a real confrontation - the same "things have
+         * gone physical" candidate pair separate's backfire uses.
+         */
+        escalation =
+            AIH.MinigameService._chooseBest([
+
+                {
+                    action: "intervene_physically",
+                    situation: AIH.MinigameService._buildBouncerSituation(
+                        "fight_starts",
+                        AIH.MinigameService._findBouncerOption("intervene_physically"),
+                        customer,
+                        intensity
+                    ),
+                    options: options,
+                    meta: AIH.MinigameService._findBouncerOption("intervene_physically")
+                },
+
+                {
+                    action: "call_authority",
+                    situation: AIH.MinigameService._buildBouncerSituation(
+                        "fight_starts",
+                        AIH.MinigameService._findBouncerOption("call_authority"),
+                        customer,
+                        intensity
+                    ),
+                    options: options,
+                    meta: AIH.MinigameService._findBouncerOption("call_authority")
+                }
+
+            ]);
+
+        AIH.MinigameService._reportOutcome(
+            escalation.meta.trait,
+            escalation.meta.direction,
+            escalation.evaluation,
+            "waitressing: ignoring " +
+            contextIncidentType +
+            " escalated into a forced confrontation",
+            { rewardedOverride: true }
+        );
+
+        /*
+         * intervene_physically's own extra failure consequence (a
+         * separate, large pride hit if its mishap roll fires) applies
+         * here too, since this IS an intervene_physically resolution -
+         * see resolveConfrontation's own mishap handling for the
+         * primary-path version of this same rule; duplicated narrowly
+         * here since this escalation path builds its own result rather
+         * than going through resolveConfrontation.
+         */
+        if (escalation.action === "intervene_physically") {
+
+            if (
+                Math.random() <
+                AIH.MinigameService.CONFRONTATION_MISHAP_CHANCE
+            ) {
+
+                AIH.MinigameService._reportOutcome(
+                    "pride",
+                    "decrease",
+                    escalation.evaluation,
+                    "waitressing: intervening physically after ignoring " +
+                    contextIncidentType +
+                    " went wrong",
+                    { rewardedOverride: true, magnitudeMultiplier: 1.6 }
+                );
+            }
+        }
+
+        escalationHeldGround =
+            escalation.evaluation.response === "reject" ||
+            escalation.evaluation.response === "partial";
+
+        return {
+
+            escalated: true,
+            escalationAction: escalation.action,
+            escalationEvaluation: escalation.evaluation,
+            heldGround: escalationHeldGround
+
+        };
+    };
 
     AIH.MinigameService._findBouncerOption = function(action) {
 
@@ -1866,6 +1947,7 @@ var AIH = AIH || {};
         var option;
         var winner;
         var backfire;
+        var ignoreAftermath;
         var mishapOccurred;
         var wentWell;
         var result;
@@ -1917,15 +1999,49 @@ var AIH = AIH || {};
             return null;
         }
 
-        AIH.MinigameService._reportOutcome(
-            winner.meta.trait,
-            winner.meta.direction,
-            winner.evaluation,
-            "waitressing confrontation: " + contextIncidentType + " -> " + winner.action
-        );
-
         backfire = null;
+        ignoreAftermath = null;
         mishapOccurred = false;
+
+        if (winner.action === "ignore") {
+
+            /*
+             * "ignore" has no driftTrait of its own (see BOUNCER_RESPONSES
+             * comment) - the entire boundary-relevant consequence, if
+             * any, comes from the aftermath below.
+             */
+            ignoreAftermath =
+                AIH.MinigameService._resolveIgnoreAftermath(
+                    customer,
+                    contextIncidentType,
+                    options,
+                    intensity
+                );
+
+        } else if (winner.action === "call_authority") {
+
+            /*
+             * Per explicit direction: pride erodes regardless of outcome
+             * - needing to call authority at all is the cost, not
+             * whether the call itself goes well.
+             */
+            AIH.MinigameService._reportOutcome(
+                winner.meta.trait,
+                winner.meta.direction,
+                winner.evaluation,
+                "waitressing confrontation: " + contextIncidentType + " -> call_authority",
+                { rewardedOverride: true }
+            );
+
+        } else {
+
+            AIH.MinigameService._reportOutcome(
+                winner.meta.trait,
+                winner.meta.direction,
+                winner.evaluation,
+                "waitressing confrontation: " + contextIncidentType + " -> " + winner.action
+            );
+        }
 
         if (winner.action === "separate") {
 
@@ -1943,11 +2059,33 @@ var AIH = AIH || {};
             mishapOccurred =
                 Math.random() <
                 AIH.MinigameService.CONFRONTATION_MISHAP_CHANCE;
+
+            /*
+             * Per explicit direction: mercy is the primary drift above,
+             * but if it fails, pride should take a big hit on top of
+             * that - a separate, large, unconditional consequence for
+             * the specific failure, not just a slightly-worse mercy
+             * drift.
+             */
+            if (mishapOccurred) {
+
+                AIH.MinigameService._reportOutcome(
+                    "pride",
+                    "decrease",
+                    winner.evaluation,
+                    "waitressing confrontation: intervening physically in " +
+                    contextIncidentType +
+                    " went wrong",
+                    { rewardedOverride: true, magnitudeMultiplier: 1.6 }
+                );
+            }
         }
 
         wentWell =
             winner.action !== "entertain" &&
-            !(backfire && !backfire.heldGround);
+            !(backfire && !backfire.heldGround) &&
+            !(ignoreAftermath && !ignoreAftermath.heldGround) &&
+            !mishapOccurred;
 
         result = {
 
@@ -1957,6 +2095,7 @@ var AIH = AIH || {};
             evaluation: winner.evaluation,
             intensity: intensity,
             backfire: backfire,
+            ignoreAftermath: ignoreAftermath,
             mishapOccurred: mishapOccurred,
             wentWell: wentWell
 
@@ -1978,15 +2117,6 @@ var AIH = AIH || {};
 
     // =========================================================================
     // SEPARATE BACKFIRE
-    // =========================================================================
-    //
-    // Mirrors AIH_Minigame_Bathhouse.js's _resolveDeflectBackfire exactly.
-    // The redirected patrons pushing for her attention is a single-
-    // situation follow-up (not another multi-candidate chooser): she
-    // either defuses it or refuses it, which forces a real, higher-danger
-    // confrontation - only intervene_physically/call_authority make sense
-    // once it has gone that far.
-    //
     // =========================================================================
 
     AIH.MinigameService._resolveSeparateBackfire = function(
@@ -2062,16 +2192,6 @@ var AIH = AIH || {};
             { rewardedOverride: true }
         );
 
-        /*
-         * "refused" only decides whether this escalates further - it is
-         * NOT the same question as "did this overall go okay", which is
-         * what the returned heldGround needs to answer (that field is
-         * what resolveConfrontation's wentWell reads). Complying with the
-         * redirected attention defuses things without violence, so it
-         * counts as heldGround:true for wentWell purposes even though she
-         * did not literally refuse - refusing is what risks it going
-         * badly here, not the other way around.
-         */
         refused =
             followUpEvaluation.response === "reject";
 
@@ -2086,14 +2206,6 @@ var AIH = AIH || {};
             };
         }
 
-        /*
-         * She refused the redirected attention. This is no longer a
-         * social situation - only the two options that make sense once
-         * things have gone physical are on the table. Whether this
-         * "went well" now depends entirely on how THAT forced
-         * confrontation resolves, not on the fact that she refused in
-         * the first place.
-         */
         escalation =
             AIH.MinigameService._chooseBest([
 
@@ -2128,7 +2240,8 @@ var AIH = AIH || {};
             escalation.meta.direction,
             escalation.evaluation,
             "waitressing confrontation backfire escalated to a forced confrontation after " +
-            contextIncidentType
+            contextIncidentType,
+            { rewardedOverride: true }
         );
 
         escalationHeldGround =
@@ -2152,20 +2265,13 @@ var AIH = AIH || {};
     // REPORT AN OUTCOME TO THE DRIFT ENGINE
     // =========================================================================
     //
-    // rewardedOverride (optional 5th arg, boolean): bypasses the response-
-    // based rewarded computation entirely. Used by the separate-backfire
-    // follow-up, where "did she defuse it" is a different judgment than
-    // the request accept/reject vocabulary quite fits.
-    //
-    // Reward-tier magnitude scaling:
-    //     accept                                        full magnitude
-    //     reluctant_accept, score > 0.20 (a real margin)  full magnitude
-    //     reluctant_accept, score <= 0.20 (barely cleared) 0.25x magnitude -
-    //         still counts, per design decision: a bare-margin grudging
-    //         accept shouldn't be written off entirely, just weighted
-    //         much lighter than a clean one.
-    //     partial                                        0.5x magnitude
-    //     reject                                          not rewarded
+    // options.rewardedOverride (boolean): bypasses the response-based
+    // rewarded computation entirely.
+    // options.magnitudeMultiplier (number, default 1.0): scales the
+    // computed magnitude up/down - used for the ignore-escalation mishap
+    // (1.6x, a deliberately large separate consequence) and the
+    // pressure_after_refusal secondary approvalSeeking pass (0.4x for an
+    // untrusted/generated source, 1.0x for a trusted regular).
     //
     // =========================================================================
 
@@ -2226,12 +2332,17 @@ var AIH = AIH || {};
                 magnitude * 0.5;
         }
 
+        magnitude =
+            magnitude *
+            AIH.MinigameService._number(options.magnitudeMultiplier, 1.0);
+
         return AIH.PersonalityDrift.reinforce(
             trait,
             direction,
             {
                 rewarded: rewarded,
-                magnitude: magnitude,
+                magnitude:
+                    AIH.MinigameService._clamp01(magnitude),
                 reason: reason
             }
         );
@@ -2292,17 +2403,6 @@ var AIH = AIH || {};
     // =========================================================================
     // FACTION REPUTATION FEEDBACK
     // =========================================================================
-    //
-    // Per MINIGAME_HANDOFF.md Quick-Start step 7. Only regulars carry a
-    // stable enough identity for this in the plain-visit case; generated
-    // customers only affect faction reputation through a confrontation
-    // (see modifyPatronFactionReputationForConfrontation below), which is
-    // dramatic enough to be faction-worthy even for a one-off visitor.
-    // A double-refusal escalates into resolveConfrontation instead of
-    // being penalized here directly, to avoid double-counting the same
-    // event through two different reputation paths.
-    //
-    // =========================================================================
 
     AIH.MinigameService.modifyRegularFactionReputation = function(customer, outcomes) {
 
@@ -2351,12 +2451,6 @@ var AIH = AIH || {};
     // =========================================================================
     // FACTION REPUTATION FEEDBACK - CONFRONTATIONS
     // =========================================================================
-    //
-    // Unlike modifyRegularFactionReputation above, this applies to ANY
-    // customer with a faction - including generated archetypes, since
-    // every archetype now carries one (see CUSTOMER_TYPES).
-    //
-    // =========================================================================
 
     AIH.MinigameService.modifyPatronFactionReputationForConfrontation = function(
         customer,
@@ -2389,6 +2483,10 @@ var AIH = AIH || {};
             !!(
                 confrontationResult.backfire &&
                 !confrontationResult.backfire.heldGround
+            ) ||
+            !!(
+                confrontationResult.ignoreAftermath &&
+                !confrontationResult.ignoreAftermath.heldGround
             );
 
         if (confrontationResult.wentWell) {
@@ -2530,16 +2628,6 @@ var AIH = AIH || {};
 
     // =========================================================================
     // HARASSMENT PATTERN -> EMERGENT "AVOID PATRON" GOAL
-    // =========================================================================
-    //
-    // Per MINIGAME_HANDOFF.md Section 5's own worked example. Tracks, per
-    // regular, how many visits ended in a hostile escalation (she
-    // refused, the customer pushed a follow-up anyway, and she refused
-    // that too). Only fires for regulars - a stable identity to attach
-    // "avoid this patron" to does not exist for a one-off generated
-    // customer. Deduplicates against an existing active/proposed goal for
-    // the same customer.
-    //
     // =========================================================================
 
     AIH.MinigameService.HARASSMENT_GOAL_THRESHOLD = 3;

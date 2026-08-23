@@ -560,8 +560,20 @@ var AIH = AIH || {};
                 prideCost: 0.05
             },
 
-            driftTrait: "approvalSeeking",
-            driftDirection: "increase",
+            /*
+             * freedomCost (0.25) is this template's dominant cost, and
+             * independence is what the shared evaluator actually weighs
+             * against freedomCost (-independence*freedomCost*0.35 in
+             * AIH_PressureEvaluator._personalityPressure). "trust" was
+             * the original choice here on thematic grounds, but AIH.
+             * Personality's trust/mercy/defiance/approvalSeeking traits
+             * are never read by PressureEvaluator at all - reinforcing
+             * one is pure flavor with no effect on future resistance for
+             * this situation type. independence/decrease actually
+             * lowers the resistance she'll face here next time.
+             */
+            driftTrait: "independence",
+            driftDirection: "decrease",
 
             followUpId: null
         },
@@ -1048,10 +1060,31 @@ var AIH = AIH || {};
                 evaluation.response === "partial";
         }
 
+        /*
+         * Magnitude tiering ported from AIH_Minigame_Service.js's
+         * _reportOutcome, which refines this into three tiers instead of
+         * bathhouse's original flat "0.5x for partial, full otherwise":
+         *
+         *     accept                                          full
+         *     reluctant_accept, score > 0.20 (a real margin)    full
+         *     reluctant_accept, score <= 0.20 (barely cleared)  0.25x -
+         *         still counts (a bare-margin grudging accept isn't
+         *         nothing), just weighted much lighter than a clean one
+         *     partial                                          0.5x
+         *     reject                                           n/a (not rewarded)
+         */
         finalMagnitude =
             magnitude;
 
-        if (evaluation.response === "partial") {
+        if (
+            evaluation.response === "reluctant_accept" &&
+            evaluation.score <= 0.20
+        ) {
+
+            finalMagnitude =
+                finalMagnitude * 0.25;
+
+        } else if (evaluation.response === "partial") {
 
             finalMagnitude =
                 finalMagnitude * 0.5;
@@ -1193,10 +1226,20 @@ var AIH = AIH || {};
     //                          is the highest of the four.
     //
     //   call_for_help          - she flags the house's own staff/security.
-    //                          Safe, but costs a little pride/dignity
-    //                          (an admission she couldn't handle it
-    //                          herself) and doesn't touch a boundary
-    //                          trait.
+    //                          Safe from immediate danger, and costs
+    //                          only a modest amount of pride/dignity (an
+    //                          admission she couldn't handle it herself)
+    //                          - low enough that a genuinely frightened
+    //                          heroine can actually reach for it instead
+    //                          of pride drowning out the safety benefit.
+    //                          It is not risk-free, though: whoever
+    //                          "helped" may expect something back for
+    //                          it, mirroring entertain's boundary cost;
+    //                          refusing THAT can escalate into a bigger
+    //                          group turning hostile than the original
+    //                          confrontation had - see
+    //                          _resolveHelperFavorDemand /
+    //                          _resolveGroupHostileEscalation below.
     //
     //   intervene_physically   - she handles it herself, physically.
     //                          Genuinely risky (danger), but specifically
@@ -1345,6 +1388,19 @@ var AIH = AIH || {};
         });
 
         // --- deflect_calmly (the risky one) ------------------------------
+        //
+        // Given a modestyCost of 0 (like call_for_help's), its resistance
+        // was tied to almost nothing except severity - and once her
+        // willingness for both options clamps to the 1.0 ceiling (which
+        // happens readily given this heroine's high baseline courage/
+        // confidence), severity becomes the ONLY differentiator, handing
+        // call_for_help a small but FIXED structural edge regardless of
+        // psychology. A genuine (smaller than intervene's) modesty risk
+        // is thematically honest anyway - getting physically between two
+        // increasingly handsy patrons risks some incidental contact,
+        // just less than a full physical struggle would - and it gives
+        // resistance a real values-driven differentiator instead of a
+        // fixed severity constant.
         candidates.push({
 
             action: "deflect_calmly",
@@ -1377,17 +1433,36 @@ var AIH = AIH || {};
 
                     dignityCost: 0.10,
                     freedomCost: 0.40,
-                    modestyCost: 0,
+                    modestyCost: 0.12,
                     prideCost: 0.10
                 }),
 
             meta: {
-                driftTrait: "assertiveness",
-                driftDirection: "increase"
+                /*
+                 * freedomCost (0.40) is this candidate's dominant cost -
+                 * independence is what the evaluator actually weighs
+                 * against it. assertiveness was the original choice
+                 * (real, via the embarrassment term, but secondary here).
+                 */
+                driftTrait: "independence",
+                driftDirection: "decrease"
             }
         });
 
         // --- call_for_help ------------------------------------------------
+        //
+        // Two rounds of tuning against the actual evaluator, not just
+        // magic numbers: dignityCost/prideCost were lowered first (pride
+        // alone was dominating resistance regardless of fear). That
+        // wasn't enough - reward:0 left this option with no
+        // willingness boost at all, while deflect_calmly/
+        // intervene_physically both get a real willingness boost from
+        // courage/riskTolerance reacting to their danger values (see
+        // AIH_PressureEvaluator._personalityPressure - danger REWARDS
+        // willingness for a brave heroine, it doesn't just cost her). A
+        // modest reward here (the house's own token for handling it
+        // properly) gives call_for_help a comparable willingness pull
+        // without relying on danger to generate it.
         candidates.push({
 
             action: "call_for_help",
@@ -1406,7 +1481,8 @@ var AIH = AIH || {};
 
                     severity: "normal",
 
-                    reward: 0,
+                    reward:
+                        Math.round(patron.rewardRange[0] * 0.5),
 
                     danger: 0.05,
 
@@ -1415,19 +1491,38 @@ var AIH = AIH || {};
                             0.15 * intensity
                         ),
 
-                    dignityCost: 0.15,
+                    dignityCost: 0.08,
                     freedomCost: 0.05,
                     modestyCost: 0,
-                    prideCost: 0.20
+                    prideCost: 0.12
                 }),
 
             meta: {
-                driftTrait: "trust",
-                driftDirection: "increase"
+                /*
+                 * prideCost+dignityCost (0.20 combined) is this
+                 * candidate's dominant cost, weighted at 0.45 in
+                 * _personalityPressure - the single largest coefficient
+                 * of any cost term. pride is what the evaluator actually
+                 * weighs; "trust" (the original choice) isn't read by
+                 * PressureEvaluator at all - see the audit note at the
+                 * top of this file/response for the full list of traits
+                 * the evaluator actually consumes.
+                 */
+                driftTrait: "pride",
+                driftDirection: "decrease"
             }
         });
 
         // --- intervene_physically (bathhouse-specific mishap risk) -------
+        //
+        // Original modestyCost (0.35) combined with this heroine's
+        // baseline pride/dignity/freedom (already ~0.88 of resistance's
+        // 0-1 range before any situation cost) pushed resistance past
+        // the clamp ceiling regardless of psychology - meaning this
+        // option's score barely moved no matter how her fear/courage
+        // changed, the same "doesn't respond to circumstance" problem
+        // originally flagged for deflect_calmly, just relocated here.
+        // Pulled back so it has real headroom to vary.
         candidates.push({
 
             action: "intervene_physically",
@@ -1450,24 +1545,26 @@ var AIH = AIH || {};
 
                     danger:
                         AIH.MinigameIntimateService._clamp01(
-                            0.35 * intensity
+                            0.28 * intensity
                         ),
 
                     embarrassment:
                         AIH.MinigameIntimateService._clamp01(
-                            0.30 * intensity
+                            0.24 * intensity
                         ),
 
                     /*
                      * The bathhouse-specific risk the design calls for:
                      * wet stone, robes, towels - a real chance of a
                      * wardrobe slip or losing her footing mid-struggle.
-                     * This is baked into the situation itself (so the
-                     * evaluator actually weighs it when deciding whether
-                     * this is a good idea for HER), not just narrated
-                     * after the fact.
+                     * Baked into the situation itself (so the evaluator
+                     * actually weighs it when deciding whether this is a
+                     * good idea for HER), not just narrated after the
+                     * fact. Reduced from 0.35 for the headroom reason
+                     * above - still the largest modestyCost of the four
+                     * candidates, still the option's defining risk.
                      */
-                    modestyCost: 0.35,
+                    modestyCost: 0.26,
 
                     dignityCost: 0.05,
                     freedomCost: 0,
@@ -1475,8 +1572,21 @@ var AIH = AIH || {};
                 }),
 
             meta: {
-                driftTrait: "assertiveness",
-                driftDirection: "increase"
+                /*
+                 * modestyCost (0.26) is this candidate's defining and
+                 * dominant cost, weighted directly by inhibition both in
+                 * the willingness penalty (-inhibition*(modestyCost+
+                 * embarrassment)*0.30) and in resistance itself
+                 * ((inhibition-0.5)*modestyCost*0.25). inhibition is
+                 * also the framework's own central drift axis (handoff
+                 * Section 3) - this deliberately shares that axis with
+                 * "entertain", so both the compliance path and the
+                 * physically-engage path erode the same core boundary
+                 * trait, while deflect_calmly/call_for_help erode
+                 * different axes (independence/pride respectively).
+                 */
+                driftTrait: "inhibition",
+                driftDirection: "decrease"
             }
         });
 
@@ -1541,11 +1651,17 @@ var AIH = AIH || {};
          * This is a definite, notable thing that just happened to her -
          * marked rewarded: true unconditionally so it reliably counts
          * (per Section 6, "rewarded" here just means "impactful enough
-         * to register," not "good for her").
+         * to register," not "good for her"). Targets riskTolerance
+         * (which the evaluator actually reads, unlike "trust") -
+         * getting ambushed after trying to calmly defuse should make
+         * her genuinely warier of leaning into danger-embracing options
+         * again, which is exactly what lowering riskTolerance does:
+         * it shrinks the courage/riskTolerance*danger willingness boost
+         * that deflect_calmly and intervene_physically both draw on.
          */
         driftResult =
             AIH.MinigameIntimateService._reportBoundaryOutcome(
-                "trust",
+                "riskTolerance",
                 "decrease",
                 evaluation,
                 0.35,
@@ -1565,8 +1681,200 @@ var AIH = AIH || {};
         };
     };
 
+    /*
+     * The bigger, second-tier version of "patrons turn hostile" - used
+     * when a call_for_help's helpers demand a favor and she refuses it.
+     * Deliberately worse than _resolveDeflectBackfire's version: more
+     * patrons are now involved (the original patron(s) AND whoever
+     * "helped"), so the danger/embarrassment/freedomCost are higher
+     * across the board. Same "reject = holds her ground" mapping.
+     */
+    AIH.MinigameIntimateService._resolveGroupHostileEscalation = function(
+        patron,
+        options,
+        intensity
+    ) {
+
+        var situation;
+        var evaluation;
+        var driftResult;
+
+        situation =
+            AIH.PressureEvaluator.normalizeSituation({
+
+                id: "bathhouse_group_escalation_" + patron.id + "_" + Date.now(),
+                type: "bathhouse_confrontation",
+                category: "group_turns_hostile",
+                description:
+                    "Refused, the ones who 'helped' turn on her too - now it's more than just " +
+                    patron.name +
+                    ".",
+
+                severity: "extreme",
+
+                reward: 0,
+
+                danger:
+                    AIH.MinigameIntimateService._clamp01(0.65 * intensity),
+
+                embarrassment:
+                    AIH.MinigameIntimateService._clamp01(0.55 * intensity),
+
+                modestyCost: 0.30,
+                dignityCost: 0.25,
+                freedomCost: 0.50,
+                prideCost: 0.20
+            });
+
+        evaluation =
+            AIH.PressureEvaluator.evaluate(
+                situation,
+                options
+            );
+
+        /*
+         * Needing to call for help at all reflects a situation she
+         * couldn't handle herself; having it then go badly on top of
+         * that compounds it. Both directions of call_for_help erode
+         * pride, not just the failure case - and this specifically
+         * (unlike a clean success) also shakes her confidence, since
+         * this is the outcome where the whole gambit visibly failed in
+         * front of her. Not every option needs a symmetric "success
+         * raises it, failure lowers it" pair.
+         */
+        driftResult =
+            AIH.MinigameIntimateService._reportBoundaryOutcome(
+                "pride",
+                "decrease",
+                evaluation,
+                0.45,
+                "a call for help backfired into a larger group turning hostile around " +
+                    patron.name,
+                true
+            );
+
+        AIH.MinigameIntimateService._reportBoundaryOutcome(
+            "confidence",
+            "decrease",
+            evaluation,
+            0.35,
+            "a call for help backfiring shook her confidence around " +
+                patron.name,
+            true
+        );
+
+        return {
+
+            evaluation: evaluation,
+            heldGround:
+                evaluation.response === "reject" ||
+                evaluation.response === "partial",
+            driftResult: driftResult
+        };
+    };
+
+    /*
+     * Mirrors "entertain" for the original patron, but sourced from
+     * whoever stepped in to help - they expect something back. If she
+     * goes along with it, that's a boundary-relevant compliance exactly
+     * like entertaining the original patron would have been. If she
+     * refuses, it escalates into _resolveGroupHostileEscalation above -
+     * a worse version of deflect_calmly's backfire, since the group is
+     * now bigger than the original confrontation.
+     */
+    AIH.MinigameIntimateService._resolveHelperFavorDemand = function(
+        patron,
+        requestId,
+        options,
+        intensity
+    ) {
+
+        var situation;
+        var evaluation;
+        var driftResult;
+        var escalation;
+        var template;
+
+        template =
+            AIH.MinigameIntimateService.REQUEST_TEMPLATES[requestId];
+
+        situation =
+            AIH.PressureEvaluator.normalizeSituation({
+
+                id: "bathhouse_helper_favor_" + patron.id + "_" + Date.now(),
+                type: "bathhouse_confrontation",
+                category: "helper_favor_demand",
+                description:
+                    "The ones who stepped in to help with " +
+                    patron.name +
+                    " now expect something back for it.",
+
+                severity: "medium",
+
+                reward: 0,
+
+                danger: 0.05,
+
+                embarrassment:
+                    AIH.MinigameIntimateService._clamp01(
+                        0.35 * intensity
+                    ),
+
+                modestyCost: 0.45,
+                freedomCost: 0.25,
+                dignityCost: 0.20,
+                prideCost: 0.15
+            });
+
+        evaluation =
+            AIH.PressureEvaluator.evaluate(
+                situation,
+                options
+            );
+
+        driftResult = null;
+        escalation = null;
+
+        if (
+            evaluation.response === "accept" ||
+            evaluation.response === "reluctant_accept" ||
+            evaluation.response === "partial"
+        ) {
+
+            driftResult =
+                AIH.MinigameIntimateService._reportBoundaryOutcome(
+                    (template && template.driftTrait) ||
+                        "inhibition",
+                    (template && template.driftDirection) ||
+                        "decrease",
+                    evaluation,
+                    0.45,
+                    "bathhouse confrontation: the helpers who stepped in against " +
+                        patron.name +
+                        " expected something back, and got it"
+                );
+
+        } else {
+
+            escalation =
+                AIH.MinigameIntimateService._resolveGroupHostileEscalation(
+                    patron,
+                    options,
+                    intensity
+                );
+        }
+
+        return {
+
+            evaluation: evaluation,
+            driftResult: driftResult,
+            escalation: escalation
+        };
+    };
+
     AIH.MinigameIntimateService.CONFRONTATION_BACKFIRE_BASE_CHANCE = 0.30;
     AIH.MinigameIntimateService.CONFRONTATION_MISHAP_CHANCE = 0.35;
+    AIH.MinigameIntimateService.CONFRONTATION_HELPER_FAVOR_CHANCE = 0.35;
 
     AIH.MinigameIntimateService.resolveConfrontation = function(patron, requestId) {
 
@@ -1576,8 +1884,10 @@ var AIH = AIH || {};
         var winner;
         var driftResult;
         var backfire;
+        var helperFavor;
         var mishapOccurred;
         var wentWell;
+        var badOutcome;
         var result;
 
         options =
@@ -1608,6 +1918,7 @@ var AIH = AIH || {};
 
         driftResult = null;
         backfire = null;
+        helperFavor = null;
         mishapOccurred = false;
 
         if (winner.action === "entertain") {
@@ -1632,10 +1943,16 @@ var AIH = AIH || {};
 
         } else if (winner.action === "deflect_calmly") {
 
+            /*
+             * Targets independence, not "assertiveness" - see the
+             * candidate meta's comment above. freedomCost (0.40) is
+             * this option's dominant cost, and independence is what the
+             * evaluator weighs against it.
+             */
             driftResult =
                 AIH.MinigameIntimateService._reportBoundaryOutcome(
-                    "assertiveness",
-                    "increase",
+                    "independence",
+                    "decrease",
                     winner.evaluation,
                     0.3,
                     "bathhouse confrontation: tried to calmly defuse " +
@@ -1666,10 +1983,19 @@ var AIH = AIH || {};
 
         } else if (winner.action === "call_for_help") {
 
+            /*
+             * Targets pride, not "trust" - see the candidate meta's own
+             * comment above for why. Needing help at all - regardless of
+             * whether it then works out - reflects a situation she
+             * couldn't handle herself, so this erodes pride even on the
+             * success path (it just erodes it less than a failed
+             * escalation does, and doesn't touch confidence the way a
+             * visible failure does).
+             */
             driftResult =
                 AIH.MinigameIntimateService._reportBoundaryOutcome(
-                    "trust",
-                    "increase",
+                    "pride",
+                    "decrease",
                     winner.evaluation,
                     0.25,
                     "bathhouse confrontation: called on the house's own staff against " +
@@ -1677,12 +2003,42 @@ var AIH = AIH || {};
                     true
                 );
 
+            /*
+             * The people who stepped in to help aren't necessarily
+             * acting for free. Chance scales with the patron's publicity
+             * (a bigger scene draws more "helpers" with their own
+             * ideas) rather than persistence, since this isn't about the
+             * original patron pushing further - it's a new complication
+             * from a new source.
+             */
+            if (
+                Math.random() <
+                AIH.MinigameIntimateService.CONFRONTATION_HELPER_FAVOR_CHANCE +
+                (patron.publicity * 0.25)
+            ) {
+
+                helperFavor =
+                    AIH.MinigameIntimateService._resolveHelperFavorDemand(
+                        patron,
+                        requestId,
+                        options,
+                        intensity
+                    );
+            }
+
         } else if (winner.action === "intervene_physically") {
 
+            /*
+             * Targets inhibition, not "assertiveness" - see the
+             * candidate meta's comment above. modestyCost (0.26) is
+             * this option's defining cost, and inhibition is the trait
+             * the evaluator actually weighs against it - and the same
+             * axis "entertain" already drifts, deliberately.
+             */
             driftResult =
                 AIH.MinigameIntimateService._reportBoundaryOutcome(
-                    "assertiveness",
-                    "increase",
+                    "inhibition",
+                    "decrease",
                     winner.evaluation,
                     0.4,
                     "bathhouse confrontation: physically intervened against " +
@@ -1699,12 +2055,23 @@ var AIH = AIH || {};
          * reputation and the reputation/fame emergent goal below. Giving
          * in (entertain) doesn't count as mishandling, but it's not what
          * builds a reputation for competence either - it's neutral here.
-         * A backfire that overwhelms her (heldGround === false) is the
-         * one clearly bad outcome.
+         * Two ways this can still go bad even after picking a good
+         * action: deflect_calmly's backfire overwhelming her, or
+         * call_for_help's helpers demanding a favor she refuses,
+         * escalating into a bigger group turning hostile that then
+         * overwhelms her too.
          */
+        badOutcome =
+            !!(backfire && !backfire.heldGround) ||
+            !!(
+                helperFavor &&
+                helperFavor.escalation &&
+                !helperFavor.escalation.heldGround
+            );
+
         wentWell =
             winner.action !== "entertain" &&
-            !(backfire && !backfire.heldGround);
+            !badOutcome;
 
         result = {
 
@@ -1713,6 +2080,7 @@ var AIH = AIH || {};
             evaluation: winner.evaluation,
             driftResult: driftResult,
             backfire: backfire,
+            helperFavor: helperFavor,
             mishapOccurred: mishapOccurred,
             wentWell: wentWell
         };
@@ -2063,11 +2431,16 @@ var AIH = AIH || {};
             );
         }
 
+        /*
+         * wentWell/badOutcome are computed once in resolveConfrontation
+         * (backfire AND helper-favor escalation both factor in there) -
+         * reuse that instead of re-deriving it here so the two stay in
+         * sync. "entertain" is neutral (not penalized) but also isn't
+         * wentWell, so it's excluded from the bad-outcome case too.
+         */
         badOutcome =
-            !!(
-                confrontationResult.backfire &&
-                !confrontationResult.backfire.heldGround
-            );
+            !confrontationResult.wentWell &&
+            confrontationResult.chosenAction !== "entertain";
 
         if (confrontationResult.wentWell) {
 

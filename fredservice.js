@@ -409,8 +409,21 @@ var AIH = AIH || {};
 
         customer_demands_priority: {
             kind: "request",
-            trait: "assertiveness",
-            direction: "increase",
+            /*
+             * assertiveness is genuinely read by the evaluator, but
+             * verified empirically inert FOR THIS TEMPLATE SPECIFICALLY:
+             * this template's reward (randomized from the triggering
+             * customer's own rewardRange, often substantial) saturates
+             * willingness to its ceiling on its own, and assertiveness
+             * only ever acts on the willingness side (+assertiveness*
+             * embarrassment*0.15) - so once willingness is already
+             * clamped, it has nothing left to contribute. pride/decrease
+             * is the confirmed, real lever (this template's prideCost
+             * 0.15 is its largest single cost, and pride also moves
+             * resistance, which isn't reward-saturated).
+             */
+            trait: "pride",
+            direction: "decrease",
             baseSituation: {
                 severity: "normal",
                 danger: 0,
@@ -439,8 +452,24 @@ var AIH = AIH || {};
 
         pressure_after_refusal: {
             kind: "request",
-            trait: "approvalSeeking",
-            direction: "increase",
+            /*
+             * "approvalSeeking" is never read by AIH_PressureEvaluator.js
+             * (confirmed by grepping every personality./values. field it
+             * touches: assertiveness, attentionSeeking, confidence,
+             * courage, curiosity, independence, inhibition, pride,
+             * riskTolerance / dignity, freedom, modesty, power, status,
+             * survival, wealth - approvalSeeking, trust, mercy, and
+             * defiance are NOT among them) - reinforcing it was pure
+             * flavor with zero effect on future resistance. embarrassment
+             * (0.30) and modestyCost (0.30) are this template's dominant,
+             * tied costs - inhibition is what the evaluator actually
+             * weighs against BOTH jointly (-inhibition*(modestyCost+
+             * embarrassment)*0.30 in _personalityPressure), matching the
+             * same boundary-compliance framing as entertain/
+             * request_outside_normal_service.
+             */
+            trait: "inhibition",
+            direction: "decrease",
             /*
              * This is the explicit "refusal is not necessarily the end"
              * mechanic - see resolveRequestIncident below. It is
@@ -461,8 +490,24 @@ var AIH = AIH || {};
 
         large_tip: {
             kind: "request",
-            trait: "approvalSeeking",
-            direction: "increase",
+            /*
+             * Same "approvalSeeking isn't read" issue as
+             * pressure_after_refusal above. First pass tried
+             * attentionSeeking/increase, but verified empirically
+             * (against a FROZEN situation - the naive first test was
+             * contaminated by _buildRequestSituation's own reward
+             * randomization masking the real signal) that attentionSeeking
+             * has EXACTLY zero effect here: this template's large,
+             * randomized reward (rewardRange scales with the customer,
+             * often quite high) pushes willingness to its ceiling
+             * regardless of embarrassment-driven terms, so only
+             * RESISTANCE-side traits show through - and of those, pride
+             * is the clearly dominant, confirmed-real lever (stronger
+             * than inhibition, which also showed some movement via this
+             * template's modestyCost).
+             */
+            trait: "pride",
+            direction: "decrease",
             baseSituation: {
                 severity: "medium",
                 danger: 0,
@@ -476,7 +521,19 @@ var AIH = AIH || {};
 
         suspected_theft: {
             kind: "request",
-            trait: "trust",
+            /*
+             * "trust" isn't read by the evaluator either. First pass
+             * tried independence/increase, but verified empirically
+             * (frozen situation) this is INERT: independence only ever
+             * acts via freedomCost, and this template's freedomCost is
+             * 0. danger (0.1) is the only nonzero cost, but courage/
+             * riskTolerance push toward accepting danger rather than
+             * resisting it, and testing confirmed they show zero
+             * movement here too (this template's reward is large enough
+             * to already saturate willingness on its own). pride/decrease
+             * is the one trait that shows a real, confirmed effect.
+             */
+            trait: "pride",
             direction: "decrease",
             baseSituation: {
                 severity: "normal",
@@ -544,7 +601,23 @@ var AIH = AIH || {};
             action: "ignore",
             danger: 0.0, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.10, reward: 0,
-            trait: "mercy", direction: "decrease"
+            /*
+             * "mercy" isn't read by the evaluator. First pass tried
+             * assertiveness/decrease on narrative grounds (avoidance
+             * breeds passivity), but verified empirically against the
+             * real evaluator this was mechanically BACKWARDS: assertiveness
+             * only appears as +assertiveness*embarrassment*0.15 in
+             * _personalityPressure - a POSITIVE contribution - so
+             * DECREASING it actually lowers this option's own future
+             * score, the opposite of what reinforcing a chosen option
+             * should do. ignore's costs (prideCost 0.05, embarrassment
+             * 0.10) are both tiny, so nothing distinguishes it strongly -
+             * but of everything tested, pride/decrease is the one real,
+             * correctly-signed lever (pride is heavily weighted in
+             * resistance's flat baseResistance term regardless of this
+             * option's own small costs).
+             */
+            trait: "pride", direction: "decrease"
         },
 
         {
@@ -574,7 +647,14 @@ var AIH = AIH || {};
              */
             danger: 0.15, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.15, reward: 0,
-            trait: "assertiveness", direction: "increase",
+            /*
+             * assertiveness/increase (matching warn's precedent) tested
+             * as EXACTLY zero effect on this option's own score against
+             * the real evaluator, both directions - unlike warn, whose
+             * situation shows a small genuine assertiveness signal.
+             * pride/decrease is the confirmed, real lever here instead.
+             */
+            trait: "pride", direction: "decrease",
             fitFor: ["someone_bothering_patron"]
         },
 
@@ -582,7 +662,14 @@ var AIH = AIH || {};
             action: "ask_to_leave",
             danger: 0.10, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.15, reward: 0,
-            trait: "defiance", direction: "increase",
+            /*
+             * "defiance" isn't read by the evaluator. Telling a customer
+             * to leave is a direct, boundary-enforcing assertive act,
+             * same category as "warn"/"separate" - assertiveness/increase
+             * is the natural valid substitute and keeps this consistent
+             * with those two.
+             */
+            trait: "assertiveness", direction: "increase",
             fitFor: ["customer_refuses_to_leave"]
         },
 
@@ -590,7 +677,21 @@ var AIH = AIH || {};
             action: "call_authority",
             danger: 0.05, prideCost: 0.10, dignityCost: 0.05,
             embarrassment: 0.05, reward: 0,
-            trait: "defiance", direction: "decrease",
+            /*
+             * "defiance" isn't read by the evaluator. First pass tried
+             * independence/decrease (matching bathhouse's call_for_help
+             * precedent), but verified empirically this is STRUCTURALLY
+             * INERT here specifically: independence only ever appears via
+             * -independence*freedomCost*0.35, and _buildBouncerSituation
+             * hardcodes freedomCost: 0 for every single bouncer response
+             * in this file, unconditionally. So independence can never do
+             * anything for ANY bouncer option, regardless of which one
+             * it's assigned to - this isn't about call_authority
+             * specifically. pride/decrease is the confirmed, real lever
+             * (this option's prideCost+dignityCost, while modest, is
+             * still nonzero and pride is heavily weighted against it).
+             */
+            trait: "pride", direction: "decrease",
             fitFor: ["fight_starts"]
         },
 
@@ -598,7 +699,26 @@ var AIH = AIH || {};
             action: "intervene_physically",
             danger: 0.55, prideCost: 0.0, dignityCost: 0.0,
             embarrassment: 0.20, reward: 0,
-            trait: "mercy", direction: "decrease",
+            /*
+             * "mercy" isn't read by the evaluator. First pass tried
+             * courage/increase (danger being the dominant cost), but
+             * verified empirically this is INERT: courage/riskTolerance
+             * already push willingness so far past its ceiling for this
+             * option (danger 0.55, further scaled by confrontation
+             * intensity) that willingness AND resistance both clamp to
+             * exactly 1.0 regardless of any further courage change -
+             * confirmed by testing courage across a wide range with zero
+             * effect. pride/decrease is the one trait that DOES
+             * eventually move it, though it takes a great deal of
+             * cumulative drift (this option has zero prideCost/
+             * dignityCost of its own, so pride only helps via
+             * resistance's flat baseline term, not a direct situational
+             * cost) - verified it does eventually break the ceiling as
+             * pride approaches its floor, not permanently frozen, just
+             * slow. That's a fitting property for the single highest-
+             * danger option to be the hardest to unlock, not a bug.
+             */
+            trait: "pride", direction: "decrease",
             fitFor: ["fight_starts"]
         },
 
@@ -607,11 +727,21 @@ var AIH = AIH || {};
             danger: 0.05, prideCost: 0.25, dignityCost: 0.30,
             embarrassment: 0.10, reward: 60,
             /*
-             * pride, not trust - taking a bribe is a hit to her own
-             * integrity/self-respect, not to how much she trusts other
-             * people. Reassigned during the trait-validity audit; trust
-             * was both mechanically inert at the time (fixed now) and a
-             * narrative mismatch regardless.
+             * "trust" isn't read by the evaluator, and - per explicit
+             * design feedback - it was also the wrong TARGET regardless:
+             * taking a bribe should erode HER OWN dignity/integrity, not
+             * her trust in others. The first fix (values.dignity) had a
+             * DIFFERENT, more basic problem: AIH_PersonalityDrift.
+             * reinforce() only ever accepts a member of
+             * AIH.Personality.TRAITS (it explicitly checks
+             * AIH.Personality.hasTrait() and no-ops otherwise) - "dignity"
+             * is a Values field, not a Personality trait, so that call
+             * would have silently done NOTHING every single time,
+             * regardless of what the evaluator reads. pride IS a valid
+             * Personality trait, IS read by the evaluator, and is
+             * empirically the single strongest lever of anything tested
+             * for this option by a wide margin - and matches the
+             * corrected "her own dignity/pride" narrative intent.
              */
             trait: "pride", direction: "decrease"
         },
@@ -620,7 +750,29 @@ var AIH = AIH || {};
             action: "protect_someone",
             danger: 0.30, prideCost: 0.0, dignityCost: 0.0,
             embarrassment: 0.10, reward: 0,
-            trait: "mercy", direction: "increase",
+            /*
+             * "mercy" isn't read by the evaluator. First pass tried
+             * riskTolerance/increase (danger being the dominant cost,
+             * and deliberately different from intervene_physically's
+             * target to avoid collapsing both onto the same trait) - but
+             * riskTolerance tested as fully inert here for the same
+             * ceiling-saturation reason as intervene_physically's courage
+             * attempt. pride/decrease is the confirmed real lever - and
+             * unlike intervene_physically, this option's OTHER fitFor
+             * context (someone_bothering_patron, a lower "medium"
+             * severity rather than "rare") shows real, immediate
+             * movement from round one, since that context's lower
+             * severityPenalty leaves genuine headroom below the
+             * resistance ceiling. It ending up sharing pride/decrease
+             * with several other options here isn't a distinctness
+             * failure - it's what the actual cost profiles support once
+             * verified against the real evaluator, and several
+             * different actions eroding the same underlying trait is
+             * already an established pattern in this framework (e.g.
+             * both "entertain" and "intervene_physically" targeting
+             * inhibition in AIH_Minigame_Bathhouse.js).
+             */
+            trait: "pride", direction: "decrease",
             fitFor: ["someone_bothering_patron", "fight_starts"]
         }
 
@@ -2063,14 +2215,19 @@ var AIH = AIH || {};
         );
 
         /*
-         * "refused" only decides whether this escalates further - it is
-         * NOT the same question as "did this overall go okay", which is
-         * what the returned heldGround needs to answer (that field is
-         * what resolveConfrontation's wentWell reads). Complying with the
-         * redirected attention defuses things without violence, so it
-         * counts as heldGround:true for wentWell purposes even though she
-         * did not literally refuse - refusing is what risks it going
-         * badly here, not the other way around.
+         * SEMANTICS: this followUpSituation is a COMPLIANCE-style
+         * situation (real modestyCost/prideCost, same shape as every
+         * other request/entertain situation in this file) - NOT a
+         * passive danger threat. "accept"/"reluctant_accept"/"partial"
+         * means she DEFUSES it by engaging (same as "entertain"
+         * elsewhere); "reject" means she REFUSES that engagement. The
+         * BOUNCER_RESPONSES design comment already says this outright:
+         * "A heroine who has drifted toward higher approvalSeeking will
+         * defuse the follow-up safely more often; a heroine who has not
+         * will refuse more often and escalate more often" - defusing is
+         * the SAFE path here, refusing is what provokes the escalation,
+         * not the other way around. (An earlier pass had this exactly
+         * backwards, treating refusal as the safe outcome.)
          */
         refused =
             followUpEvaluation.response === "reject";
@@ -2131,6 +2288,19 @@ var AIH = AIH || {};
             contextIncidentType
         );
 
+        /*
+         * SEMANTICS: this escalation is a _chooseBest across ACTIONS
+         * (intervene_physically / call_authority) - the exact same
+         * active-choice resolution used for the primary confrontation
+         * and every other _chooseBest call in this file, where "accept"/
+         * "reluctant_accept" means she successfully commits to and
+         * executes the winning action, not that a passive threat
+         * overwhelmed her. Using the "reject/partial = good" convention
+         * here (borrowed from a passive-danger-threat framing that
+         * doesn't apply to this step) would be inconsistent with how
+         * intervene_physically/call_authority are read everywhere else
+         * in this same file. (An earlier pass made exactly that mistake.)
+         */
         escalationHeldGround =
             escalation.evaluation.response === "accept" ||
             escalation.evaluation.response === "reluctant_accept";

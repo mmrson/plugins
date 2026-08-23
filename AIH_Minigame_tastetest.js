@@ -1065,6 +1065,133 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
+    // GROUP PRESSURE / TRUSTED-NPC PRESSURE
+    // =========================================================================
+    //
+    // _regularPressureOptions above is per-single-maker. This is the
+    // group-level counterpart: when several makers (or several avoided
+    // regulars, in the overwhelm escalation) are presented at once, two
+    // additional real pressures are in play, both fed in through the
+    // same sanctioned options.domainPressure/attachmentDiscount channel
+    // rather than by trying to make PressureEvaluator read a trait it
+    // doesn't (see the assertiveness/approvalSeeking fix above for why
+    // that path is off-limits):
+    //
+    //   - approval-seeking group pressure: a heroine who cares more about
+    //     others' approval (AIH.Personality.getTrait("approvalSeeking"),
+    //     her REAL current value, not a hardcoded assumption) feels more
+    //     pressure from a bigger crowd of makers wanting her attention at
+    //     once. Scales with both her actual trait and group size.
+    //
+    //   - pressure from a trusted NPC: if a genuinely trusted regular is
+    //     part of the group, their presence makes the whole situation
+    //     read as a little safer/easier - the single highest trust value
+    //     among any regular in the group, not summed (one trusted face
+    //     in a crowd doesn't multiply by how many other people are
+    //     there).
+    //
+    // =========================================================================
+
+    AIH.MinigameTasteTest._groupPressureOptions = function(makers) {
+
+        var approvalSeeking;
+        var groupSize;
+        var maxTrust;
+        var i;
+        var relationship;
+        var trust;
+
+        if (
+            !Array.isArray(makers) ||
+            makers.length === 0
+        ) {
+
+            return {};
+        }
+
+        approvalSeeking =
+            (
+                typeof AIH.Personality !== "undefined" &&
+                AIH.Personality.getTrait
+            ) ?
+                AIH.MinigameTasteTest._clamp01(
+                    AIH.Personality.getTrait("approvalSeeking")
+                ) :
+                0.5;
+
+        groupSize =
+            makers.length;
+
+        maxTrust = 0;
+
+        if (
+            typeof AIH.Relationships !== "undefined" &&
+            AIH.Relationships.get
+        ) {
+
+            for (
+                i = 0;
+                i < makers.length;
+                i++
+            ) {
+
+                if (makers[i].kind !== "regular") {
+                    continue;
+                }
+
+                relationship =
+                    AIH.Relationships.get(makers[i].id);
+
+                if (!relationship) {
+                    continue;
+                }
+
+                trust =
+                    Number(relationship.trust) || 0;
+
+                if (trust > maxTrust) {
+                    maxTrust = trust;
+                }
+            }
+        }
+
+        return {
+
+            domainPressure:
+                approvalSeeking *
+                Math.min(groupSize - 1, 7) *
+                0.08,
+
+            attachmentDiscount:
+                AIH.MinigameTasteTest._clamp01(
+                    maxTrust / 100
+                ) * 0.15
+        };
+    };
+
+    /*
+     * Sums both fields of two options objects - used to layer group-level
+     * pressure on top of a single maker's own regular pressure, without
+     * either one silently overwriting the other.
+     */
+    AIH.MinigameTasteTest._mergeOptions = function(a, b) {
+
+        a = a || {};
+        b = b || {};
+
+        return {
+
+            domainPressure:
+                (Number(a.domainPressure) || 0) +
+                (Number(b.domainPressure) || 0),
+
+            attachmentDiscount:
+                (Number(a.attachmentDiscount) || 0) +
+                (Number(b.attachmentDiscount) || 0)
+        };
+    };
+
+    // =========================================================================
     // BATCH INTENSITY (pattern C)
     // =========================================================================
     //
@@ -1372,7 +1499,10 @@ var AIH = AIH || {};
         }
 
         options =
-            AIH.MinigameTasteTest._regularPressureOptions(maker);
+            AIH.MinigameTasteTest._mergeOptions(
+                AIH.MinigameTasteTest._regularPressureOptions(maker),
+                (batchContext && batchContext.groupPressureOptions) || {}
+            );
 
         evaluation =
             AIH.PressureEvaluator.evaluate(
@@ -1674,9 +1804,25 @@ var AIH = AIH || {};
         );
     };
 
+    /*
+     * Crossing DISCOVERY_PALATE_THRESHOLD, once, is the "she realized,
+     * unprompted, that she genuinely enjoys this" beat - learned from
+     * AIH_Minigame_Milkmaid.js's _recordTasteExposure, which fires an
+     * identical one-time reinforce() on its own familiarity curve.
+     * Reported as intrinsic enjoyment (rewarded: true by definition, per
+     * handoff Section 8), not a compliance reward - distinct from the
+     * continuous reward/mishap-chance scaling _palateLevel() already
+     * drives elsewhere. Checked here (before/after the same increment
+     * that grows palate) rather than in a separate pass, so it can only
+     * ever fire on the exact crossing, once per save.
+     */
+    AIH.MinigameTasteTest.DISCOVERY_PALATE_THRESHOLD = 0.6;
+
     AIH.MinigameTasteTest._recordGlobalTasting = function() {
 
         var state;
+        var levelBefore;
+        var levelAfter;
 
         state =
             AIH.MinigameTasteTest._ensure();
@@ -1685,8 +1831,34 @@ var AIH = AIH || {};
             return;
         }
 
+        levelBefore =
+            AIH.MinigameTasteTest._palateLevel();
+
         state.totalTastings =
             (state.totalTastings || 0) + 1;
+
+        levelAfter =
+            AIH.MinigameTasteTest._palateLevel();
+
+        if (
+            levelBefore < AIH.MinigameTasteTest.DISCOVERY_PALATE_THRESHOLD &&
+            levelAfter >= AIH.MinigameTasteTest.DISCOVERY_PALATE_THRESHOLD &&
+            typeof AIH.PersonalityDrift !== "undefined" &&
+            AIH.PersonalityDrift.reinforce
+        ) {
+
+            AIH.PersonalityDrift.reinforce(
+                "inhibition",
+                "decrease",
+                {
+                    rewarded: true,
+                    magnitude: 0.4,
+                    reason:
+                        "she realized, unprompted, that she has genuinely " +
+                        "come to enjoy the taste of the ferment"
+                }
+            );
+        }
     };
 
     /*
@@ -1851,7 +2023,10 @@ var AIH = AIH || {};
             );
 
         options =
-            AIH.MinigameTasteTest._regularPressureOptions(maker);
+            AIH.MinigameTasteTest._mergeOptions(
+                AIH.MinigameTasteTest._regularPressureOptions(maker),
+                (batchContext && batchContext.groupPressureOptions) || {}
+            );
 
         candidates = [];
 
@@ -1922,8 +2097,20 @@ var AIH = AIH || {};
             options: options,
 
             meta: {
-                driftTrait: "approvalSeeking",
-                driftDirection: "increase"
+                /*
+                 * approvalSeeking was the original choice here, but
+                 * PressureEvaluator never reads approvalSeeking/mercy/
+                 * trust/defiance at all (confirmed against the actual
+                 * evaluator code) - reinforcing it would be pure flavor
+                 * with zero effect on future resistance. assertiveness
+                 * IS read directly (see the embarrassment term in
+                 * _personalityPressure), and declining to commit to a
+                 * confident guess is a genuine, real data point on it -
+                 * drifting it down here actually changes how she resists
+                 * next time.
+                 */
+                driftTrait: "assertiveness",
+                driftDirection: "decrease"
             },
 
             situation:
@@ -2328,6 +2515,7 @@ var AIH = AIH || {};
         var intensity;
         var avgReward;
         var avgQuality;
+        var groupOptions;
         var candidates;
 
         intensity =
@@ -2349,12 +2537,17 @@ var AIH = AIH || {};
                 0
             ) / makers.length;
 
+        groupOptions =
+            AIH.MinigameTasteTest._groupPressureOptions(makers);
+
         candidates = [];
 
         // --- hold_firm ----------------------------------------------------
         candidates.push({
 
             action: "hold_firm",
+
+            options: groupOptions,
 
             situation:
                 AIH.PressureEvaluator.normalizeSituation({
@@ -2399,6 +2592,8 @@ var AIH = AIH || {};
 
             action: "overwhelmed_partial",
 
+            options: groupOptions,
+
             situation:
                 AIH.PressureEvaluator.normalizeSituation({
 
@@ -2441,6 +2636,8 @@ var AIH = AIH || {};
         candidates.push({
 
             action: "overwhelmed_full",
+
+            options: groupOptions,
 
             situation:
                 AIH.PressureEvaluator.normalizeSituation({
@@ -2486,6 +2683,8 @@ var AIH = AIH || {};
         candidates.push({
 
             action: "genuine_multiple_preference",
+
+            options: groupOptions,
 
             situation:
                 AIH.PressureEvaluator.normalizeSituation({
@@ -2778,7 +2977,10 @@ var AIH = AIH || {};
                         return sum + (m.authority || 0);
                     },
                     0
-                ) / makers.length
+                ) / makers.length,
+
+            groupPressureOptions:
+                AIH.MinigameTasteTest._groupPressureOptions(makers)
         };
 
         results = [];
