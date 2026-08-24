@@ -211,6 +211,49 @@ var AIH = AIH || {};
         return battler.actorId() === AIH.Hero.actorId();
     };
 
+    /*
+     * MZ's ImageManager.loadBitmap(folder, filename) URI-encodes the
+     * filename argument and appends ".png" itself - it expects folder
+     * ("img/cutins/") and filename ("example_power_strike_attacker",
+     * no extension) as SEPARATE arguments. DEFINITIONS above store one
+     * full relative path with extension for readability, so this splits
+     * it at the last "/" and strips the extension before ever touching
+     * ImageManager - passing the whole path as "filename" with an empty
+     * folder would get its "/" separators URI-encoded into "%2F" and
+     * fail to resolve.
+     */
+    AIH.BattleCutins._splitImagePath = function(path) {
+
+        var lastSlash;
+        var folder;
+        var filenameWithExt;
+        var filename;
+
+        path =
+            String(path || "");
+
+        lastSlash =
+            path.lastIndexOf("/");
+
+        folder =
+            lastSlash >= 0 ?
+                path.slice(0, lastSlash + 1) :
+                "";
+
+        filenameWithExt =
+            lastSlash >= 0 ?
+                path.slice(lastSlash + 1) :
+                path;
+
+        filename =
+            filenameWithExt.replace(/\.(png|jpg|jpeg|webp)$/i, "");
+
+        return {
+            folder: folder,
+            filename: filename
+        };
+    };
+
     AIH.BattleCutins._extractNotetag = function(note, tagName) {
 
         var pattern;
@@ -526,12 +569,15 @@ var AIH = AIH || {};
         this._holdTimer = 0;
         this._phase = "in";
 
+        var split =
+            AIH.BattleCutins._splitImagePath(
+                this._definition.path
+            );
+
         this.bitmap =
             ImageManager.loadBitmap(
-                "",
-                this._definition.path,
-                0,
-                true
+                split.folder,
+                split.filename
             );
 
         this.anchor.x = 0.5;
@@ -1306,6 +1352,36 @@ var AIH = AIH || {};
         );
     };
 
+    /*
+     * How often (in frames, at 60fps) the party-status window redraws
+     * while a cut-in is up, on top of the always-on refresh at the
+     * hidden->shown edge. A full redraw is a face-bitmap blit plus
+     * several gauge/icon draws per member - cheap once, but not free at
+     * 60/sec, so this throttles it to ~4/sec instead: a DOT tick or heal
+     * landing mid-cut-in shows up within a quarter second, which reads
+     * as real-time to a player, without paying full per-frame redraw
+     * cost for a window that's usually static moment to moment.
+     */
+    AIH.BattleCutins.PARTY_STATUS_REFRESH_INTERVAL = 15;
+
+    AIH.BattleCutins._partyStatusRefreshTimer = 0;
+
+    /*
+     * Lets an event that changes party data mid-cut-in (a struggle
+     * check resolving, a state landing) force an immediate redraw
+     * instead of waiting out the throttle - see
+     * AIH_StatusEffectCutinBridge.js's struggle resolution for the
+     * concrete use.
+     */
+    AIH.BattleCutins.requestPartyStatusRefresh = function() {
+
+        if (AIH.BattleCutins._partyStatusWindow) {
+            AIH.BattleCutins._partyStatusWindow.refresh();
+        }
+
+        AIH.BattleCutins._partyStatusRefreshTimer = 0;
+    };
+
     AIH.BattleCutins._updatePartyStatusWindow = function() {
 
         var win;
@@ -1328,6 +1404,23 @@ var AIH = AIH || {};
         ) {
 
             win.refresh();
+            AIH.BattleCutins._partyStatusRefreshTimer = 0;
+
+        } else if (
+            shouldShow &&
+            win.visible
+        ) {
+
+            AIH.BattleCutins._partyStatusRefreshTimer += 1;
+
+            if (
+                AIH.BattleCutins._partyStatusRefreshTimer >=
+                AIH.BattleCutins.PARTY_STATUS_REFRESH_INTERVAL
+            ) {
+
+                win.refresh();
+                AIH.BattleCutins._partyStatusRefreshTimer = 0;
+            }
         }
 
         win.visible =
