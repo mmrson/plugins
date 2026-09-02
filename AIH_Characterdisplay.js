@@ -234,6 +234,18 @@ var AIH = AIH || {};
             overlayOpacity: 0.30,
             blobCount: 3,
             defaultDurationFrames: 90
+        },
+        bound: {
+            label: "Bound",
+            color: "#8a7355",
+            overlayOpacity: 0.45,
+            blobCount: 3,
+            defaultDurationFrames: null,
+            stages: [
+                { label: "Bound (wrists, front)",           color: "#9c8468", overlayOpacity: 0.30, blobCount: 2 },
+                { label: "Bound (wrists behind back)",      color: "#8a7355", overlayOpacity: 0.48, blobCount: 3 },
+                { label: "Bound (wrists + ankles)",         color: "#6f5a42", overlayOpacity: 0.62, blobCount: 5 }
+            ]
         }
     };
 

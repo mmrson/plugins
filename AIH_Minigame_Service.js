@@ -1,5 +1,5 @@
 /*:
- * @plugindesc AI Hero Framework - Service Minigame (Waitressing) v0.1.0
+ * @plugindesc AI Hero Framework - Service Minigame (Waitressing) v0.1.2
  * @author AI Hero Project
  *
  * @help
@@ -22,8 +22,10 @@
  * WHAT THIS MODULE DOES NOT DO
  *
  * - decide what she does with a situation on its own initiative. Every
- *   boundary-relevant moment goes through AIH.PressureEvaluator.evaluate();
- *   this module supplies the situation, not the verdict.
+ *   boundary-relevant moment goes through the shared evaluator (via
+ *   AIH.CursedItems.evaluateWithPossibleFlip() when that module is
+ *   present - see CURSED ITEM INTEGRATION below); this module supplies
+ *   the situation, not the verdict.
  * - modify personality/values/emotions directly. Boundary-relevant
  *   outcomes are reported through AIH.PersonalityDrift.reinforce(); this
  *   module never calls AIH.Personality.adjustTrait() itself.
@@ -45,10 +47,34 @@
  * situation per candidate response (each with pressure values that
  * reflect what THAT specific response would actually cost/reward her),
  * evaluates all of them, and picks whichever comes back with the best
- * response tier and score. This reuses the shared evaluator N times
+ * raw score (see _chooseBest's own comment for why this is raw score,
+ * not a tier-weighted rank). This reuses the shared evaluator N times
  * instead of inventing new machinery, and is the recommended pattern for
  * any other minigame framework that needs multi-option decisions - see
  * MINIGAME_HANDOFF.md.
+ *
+ * ============================================================================
+ *
+ * CURSED ITEM INTEGRATION (v0.1.2)
+ *
+ * Every decision this module resolves through the shared evaluator now
+ * goes through AIH.CursedItems.evaluateWithPossibleFlip() when that
+ * module is loaded (see _evaluate below) rather than calling
+ * AIH.PressureEvaluator.evaluate() directly - so an equipped cursed item
+ * can genuinely flip a request/confrontation decision, exactly like
+ * AIH_Minigame_TasteTest.js. One cursed item is written to interact with
+ * THIS minigame specifically:
+ *
+ *     bit_of_obedient_silence   a mouth restraint that keeps her from
+ *                               speaking clearly - while it's equipped,
+ *                               any bouncer response that requires clear
+ *                               speech ("warn", "ask_to_leave") is
+ *                               excluded from her available candidates
+ *                               (see _buildBouncerCandidates). Its own
+ *                               removal condition (three confrontations
+ *                               resolved wentWell despite the gag) is
+ *                               tracked by this module directly - see
+ *                               CURSED ITEM RELEASE CONDITION TRACKING.
  *
  * ============================================================================
  *
@@ -104,7 +130,7 @@ var AIH = AIH || {};
 
     AIH.MinigameService = AIH.MinigameService || {};
 
-    AIH.MinigameService.VERSION = "0.1.0";
+    AIH.MinigameService.VERSION = "0.1.2";
 
     AIH.MinigameService.SCHEMA_VERSION = 1;
 
@@ -165,6 +191,13 @@ var AIH = AIH || {};
     // STORAGE
     // =========================================================================
 
+    AIH.MinigameService._defaultCurseTracking = function() {
+
+        return {
+            obedientSilenceConfrontationsWentWell: 0
+        };
+    };
+
     AIH.MinigameService._state = function() {
 
         if (
@@ -206,7 +239,10 @@ var AIH = AIH || {};
 
                 nextCustomerId: 1,
 
-                nextIncidentId: 1
+                nextIncidentId: 1,
+
+                curseTracking:
+                    AIH.MinigameService._defaultCurseTracking()
             };
         }
 
@@ -220,6 +256,28 @@ var AIH = AIH || {};
 
         if (!Array.isArray(state.minigameService.shiftHistory)) {
             state.minigameService.shiftHistory = [];
+        }
+
+        if (
+            !state.minigameService.curseTracking ||
+            typeof state.minigameService.curseTracking !== "object"
+        ) {
+
+            state.minigameService.curseTracking =
+                AIH.MinigameService._defaultCurseTracking();
+        }
+
+        /*
+         * Additive default for saves made before v0.1.2's new counter
+         * existed.
+         */
+        if (
+            state.minigameService.curseTracking
+                .obedientSilenceConfrontationsWentWell === undefined
+        ) {
+
+            state.minigameService.curseTracking
+                .obedientSilenceConfrontationsWentWell = 0;
         }
 
         return state.minigameService;
@@ -403,6 +461,12 @@ var AIH = AIH || {};
     // in the customer's publicity (-> embarrassment) and authority
     // (-> dignityCost/prideCost multiplier).
     //
+    // Trait assignments below are checked against the CURRENT
+    // AIH_PressureEvaluator.js (post mercy-retirement, with the trust/
+    // defiance/approvalSeeking-resistance terms merged in) - not an
+    // earlier snapshot. assertiveness, trust, inhibition, and
+    // approvalSeeking are all genuinely read.
+    //
     // =========================================================================
 
     AIH.MinigameService.INCIDENT_TYPES = {
@@ -439,8 +503,34 @@ var AIH = AIH || {};
 
         pressure_after_refusal: {
             kind: "request",
-            trait: "approvalSeeking",
-            direction: "increase",
+            /*
+             * inhibition is the primary, dominant trait here (embarrassment
+             * 0.30 and modestyCost 0.30 are this template's tied largest
+             * costs, and inhibition is weighted directly against both
+             * jointly). approvalSeeking is ALSO reported as a genuine
+             * secondary factor - see resolveRequestIncident, which reports
+             * it at reduced magnitude alongside inhibition on the same
+             * event. Per design decision: her people-pleasing tendency
+             * should have a real, measurable effect here, especially when
+             * a trusted/familiar party is the one doing the pressuring -
+             * AIH_PressureEvaluator.js's resistance formula now includes
+             * an approvalSeeking x attachmentDiscount term specifically
+             * for this (a regular's trust amplifies how much her
+             * approval-seeking pulls against resistance). Verified this
+             * works and shows a real, correctly-signed effect in
+             * unsaturated conditions - but this specific template's own
+             * "rare" severity + high combined costs mean it sits in a
+             * genuine double-saturation zone (both willingness AND
+             * resistance clamp to their ceiling simultaneously) for
+             * several trait combinations, which is a property of this
+             * heroine's baseline stats meeting this template's cost
+             * profile, not a defect in the new term - confirmed by
+             * direct testing, not assumed.
+             */
+            trait: "inhibition",
+            direction: "decrease",
+            secondaryTrait: "approvalSeeking",
+            secondaryDirection: "increase",
             /*
              * This is the explicit "refusal is not necessarily the end"
              * mechanic - see resolveRequestIncident below. It is
@@ -461,8 +551,20 @@ var AIH = AIH || {};
 
         large_tip: {
             kind: "request",
-            trait: "approvalSeeking",
-            direction: "increase",
+            /*
+             * pride, not approvalSeeking - tested directly against the
+             * real evaluator with this template's own field values at a
+             * realistic reward (e.g. 200, within the wealthy archetype's
+             * range): the reward alone saturates willingness to its
+             * ceiling regardless of any willingness-side trait, so
+             * approvalSeeking (which only ever acts on willingness)
+             * contributes exactly zero here despite being mechanically
+             * "read" by the evaluator. pride is resistance-side and
+             * shows a real, substantial effect (confirmed delta -0.16)
+             * even with willingness saturated.
+             */
+            trait: "pride",
+            direction: "decrease",
             baseSituation: {
                 severity: "medium",
                 danger: 0,
@@ -476,6 +578,13 @@ var AIH = AIH || {};
 
         suspected_theft: {
             kind: "request",
+            /*
+             * trust/decrease - trust IS read by the current evaluator
+             * (the trust x danger term in _personalityPressure), and this
+             * template's whole premise is a trust judgment about the
+             * customer, so it's the correct fit narratively as well as
+             * mechanically.
+             */
             trait: "trust",
             direction: "decrease",
             baseSituation: {
@@ -516,6 +625,11 @@ var AIH = AIH || {};
     // values - _buildBouncerSituation scales them against the incident's
     // own severity.
     //
+    // requiresSpeech: true marks a response as needing her to speak
+    // clearly - read by _buildBouncerCandidates below to exclude it
+    // while bit_of_obedient_silence (see AIH_CursedItems.js) is
+    // equipped. Every other response is unaffected either way.
+    //
     // IMPORTANT - "separate" is not actually the safe default it looks
     // like. Pulling two riled-up patrons apart without otherwise engaging
     // them tends to redirect their attention onto HER instead of each
@@ -544,7 +658,18 @@ var AIH = AIH || {};
             action: "ignore",
             danger: 0.0, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.10, reward: 0,
-            trait: "mercy", direction: "decrease"
+            /*
+             * "mercy" was the original target here but has been retired
+             * as a stored trait entirely (see AIH_PressureEvaluator.js's
+             * getDecisiveness() migration). pride is the replacement:
+             * ignore's own costs are both tiny (prideCost 0.05,
+             * embarrassment 0.10), so nothing about the situation itself
+             * distinguishes it strongly, but pride is heavily weighted in
+             * resistance's flat baseResistance term regardless of this
+             * option's small situational costs, making it the one real
+             * lever available.
+             */
+            trait: "pride", direction: "decrease"
         },
 
         {
@@ -552,7 +677,8 @@ var AIH = AIH || {};
             danger: 0.05, prideCost: 0.0, dignityCost: 0.0,
             embarrassment: 0.05, reward: 0,
             trait: "assertiveness", direction: "increase",
-            fitFor: ["customer_refuses_to_leave"]
+            fitFor: ["customer_refuses_to_leave"],
+            requiresSpeech: true
         },
 
         {
@@ -582,15 +708,36 @@ var AIH = AIH || {};
             action: "ask_to_leave",
             danger: 0.10, prideCost: 0.05, dignityCost: 0.0,
             embarrassment: 0.15, reward: 0,
-            trait: "defiance", direction: "increase",
-            fitFor: ["customer_refuses_to_leave"]
+            /*
+             * assertiveness, not defiance - defiance isn't read by the
+             * evaluator, and telling a customer to leave is a direct,
+             * boundary-enforcing assertive act, the same category as
+             * "warn"/"separate" above.
+             */
+            trait: "assertiveness", direction: "increase",
+            fitFor: ["customer_refuses_to_leave"],
+            requiresSpeech: true
         },
 
         {
             action: "call_authority",
             danger: 0.05, prideCost: 0.10, dignityCost: 0.05,
             embarrassment: 0.05, reward: 0,
-            trait: "defiance", direction: "decrease",
+            /*
+             * pride, not defiance, per design decision: calling for
+             * outside authority reflects an inability to handle the
+             * situation herself, and that costs her pride REGARDLESS of
+             * how the call itself resolves - not something that should
+             * only register when it goes badly. Reported with
+             * unconditionalDriftReport: true in resolveConfrontation/
+             * _resolveSeparateBackfire below, matching
+             * AIH_Minigame_Bathhouse.js's call_for_help precedent
+             * ("needing help at all reflects a situation she couldn't
+             * handle herself, so this erodes pride even on the success
+             * path").
+             */
+            trait: "pride", direction: "decrease",
+            unconditionalDriftReport: true,
             fitFor: ["fight_starts"]
         },
 
@@ -598,7 +745,17 @@ var AIH = AIH || {};
             action: "intervene_physically",
             danger: 0.55, prideCost: 0.0, dignityCost: 0.0,
             embarrassment: 0.20, reward: 0,
-            trait: "mercy", direction: "decrease",
+            /*
+             * "mercy" was the original target here but has been retired
+             * (see the "ignore" comment above for the same migration).
+             * pride is the replacement - this option has zero prideCost/
+             * dignityCost of its own, so pride only helps via
+             * resistance's flat baseline term, not a direct situational
+             * cost, meaning it can take real cumulative drift before it
+             * moves. That's a fitting property for the single
+             * highest-danger option to be the hardest to unlock.
+             */
+            trait: "pride", direction: "decrease",
             fitFor: ["fight_starts"]
         },
 
@@ -609,9 +766,7 @@ var AIH = AIH || {};
             /*
              * pride, not trust - taking a bribe is a hit to her own
              * integrity/self-respect, not to how much she trusts other
-             * people. Reassigned during the trait-validity audit; trust
-             * was both mechanically inert at the time (fixed now) and a
-             * narrative mismatch regardless.
+             * people. Reassigned during the trait-validity audit.
              */
             trait: "pride", direction: "decrease"
         },
@@ -620,7 +775,18 @@ var AIH = AIH || {};
             action: "protect_someone",
             danger: 0.30, prideCost: 0.0, dignityCost: 0.0,
             embarrassment: 0.10, reward: 0,
-            trait: "mercy", direction: "increase",
+            /*
+             * "mercy" was the original target here but has been retired
+             * (see the "ignore" comment above for the same migration).
+             * pride is the replacement here too - it ending up shared
+             * with several other options in this list isn't a
+             * distinctness failure; several different actions eroding
+             * the same underlying trait is already an established
+             * pattern in this framework (e.g. both "entertain" and
+             * "intervene_physically" targeting inhibition in
+             * AIH_Minigame_Bathhouse.js).
+             */
+            trait: "pride", direction: "decrease",
             fitFor: ["someone_bothering_patron", "fight_starts"]
         }
 
@@ -1317,6 +1483,66 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
+    // CURSED ITEM INTEGRATION
+    // =========================================================================
+    //
+    // Every decision in this file that would otherwise call
+    // AIH.PressureEvaluator.evaluate() directly now goes through this
+    // wrapper instead - a drop-in swap for
+    // AIH.CursedItems.evaluateWithPossibleFlip() when that module is
+    // present (byte-for-byte identical to a plain evaluate() call when no
+    // flip-capable cursed item is equipped, or the roll doesn't trigger -
+    // see that module's own header), falling back to the plain evaluator
+    // if AIH.CursedItems isn't loaded at all. recordAction() is called
+    // once per decision point resolved through this wrapper, advancing
+    // the flip clock for any equipped cursed item, exactly the way
+    // AIH_Minigame_TasteTest.js's own identical wrapper does.
+    //
+    // =========================================================================
+
+    AIH.MinigameService._evaluate = function(situation, options) {
+
+        var evaluation;
+
+        if (
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.evaluateWithPossibleFlip
+        ) {
+
+            evaluation =
+                AIH.CursedItems.evaluateWithPossibleFlip(situation, options);
+
+        } else {
+
+            evaluation =
+                AIH.PressureEvaluator.evaluate(situation, options);
+        }
+
+        if (
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.recordAction
+        ) {
+
+            AIH.CursedItems.recordAction();
+        }
+
+        if (
+            evaluation &&
+            evaluation.internalConflict &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.recordConflictBelief
+        ) {
+
+            AIH.CursedItems.recordConflictBelief(
+                evaluation.flipItemId || "unknown",
+                "waitressing: her real self would have answered differently"
+            );
+        }
+
+        return evaluation;
+    };
+
+    // =========================================================================
     // GENERIC "CHOOSE BEST OF SEVERAL CANDIDATES" HELPER
     // =========================================================================
     //
@@ -1331,9 +1557,8 @@ var AIH = AIH || {};
     //             candidate so a regular's familiarity/trust applies
     //             consistently across all of them, not just one.
     //
-    // Returns { action, evaluation, meta } for the winner, ranked first by
-    // response tier (accept > reluctant_accept > partial > reject), then
-    // by score within a tier.
+    // Returns { action, evaluation, meta } for the winner, ranked by raw
+    // score alone (see _chooseBest's own comment below for why).
     //
     // =========================================================================
 
@@ -1347,14 +1572,41 @@ var AIH = AIH || {};
     AIH.MinigameService._chooseBest = function(candidates) {
 
         var best;
-        var bestRank;
+        var bestScore;
         var i;
         var candidate;
         var evaluation;
-        var rank;
 
+        /*
+         * Ranks candidates by raw score alone, NOT by response tier.
+         *
+         * An earlier version ranked by (RESPONSE_RANK[response] * 10 +
+         * score), on the reasoning that an "accept" should generally beat
+         * a "reject" even with a lower score. But response tier is
+         * itself just score run through the same fixed thresholds
+         * (accept >= 0.35, reluctant_accept >= 0.05, partial >= -0.15,
+         * else reject) - it carries no information beyond what score
+         * already has. Multiplying by tier didn't fix mis-orderings; it
+         * manufactured artificial ~10-point margins out of tier-boundary
+         * crossings that were often only ~0.02-0.05 in real score terms.
+         * That artificial margin was then large enough to swamp all the
+         * legitimate variation (different customers, different drifted
+         * personality) the rest of this system exists to produce -
+         * whichever candidate happened to cross a boundary would then
+         * win almost every trial regardless of which customer spawned,
+         * which is exactly the "100% of trials pick the same action"
+         * collapse this was rewritten to fix. Found by comparing the raw
+         * per-candidate scores directly against the inflated ranks in a
+         * real collapsed scenario, not assumed from theory.
+         *
+         * Ranking by raw score means the actual best-scoring candidate
+         * always wins, by a margin proportional to how much better it
+         * actually is - including cases where every candidate is
+         * "reject" tier and she is picking the least-bad of a bad set,
+         * which is itself the correct behavior for a chooseBest helper.
+         */
         best = null;
-        bestRank = -1;
+        bestScore = -Infinity;
 
         for (
             i = 0;
@@ -1365,19 +1617,14 @@ var AIH = AIH || {};
             candidate = candidates[i];
 
             evaluation =
-                AIH.PressureEvaluator.evaluate(
+                AIH.MinigameService._evaluate(
                     candidate.situation,
                     candidate.options || {}
                 );
 
-            rank =
-                (AIH.MinigameService.RESPONSE_RANK[evaluation.response] || 0) *
-                10 +
-                evaluation.score;
+            if (evaluation.score > bestScore) {
 
-            if (rank > bestRank) {
-
-                bestRank = rank;
+                bestScore = evaluation.score;
 
                 best = {
                     action: candidate.action,
@@ -1537,6 +1784,82 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
+    // BUILD BOUNCER CANDIDATES (with speech-requirement filtering)
+    // =========================================================================
+    //
+    // Wraps BOUNCER_RESPONSES into the { action, situation, options, meta }
+    // shape _chooseBest expects, the same as resolveConfrontation always
+    // built inline - pulled out into its own function purely so the
+    // bit_of_obedient_silence filter below has one place to live rather
+    // than being duplicated at every _chooseBest call site that iterates
+    // BOUNCER_RESPONSES.
+    //
+    // =========================================================================
+
+    AIH.MinigameService._buildBouncerCandidates = function(
+        contextIncidentType,
+        customer,
+        intensity,
+        options
+    ) {
+
+        var candidates;
+        var i;
+        var option;
+        var silenced;
+
+        candidates = [];
+
+        silenced =
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("bit_of_obedient_silence");
+
+        for (
+            i = 0;
+            i < AIH.MinigameService.BOUNCER_RESPONSES.length;
+            i++
+        ) {
+
+            option =
+                AIH.MinigameService.BOUNCER_RESPONSES[i];
+
+            /*
+             * bit_of_obedient_silence: a response that requires clear
+             * speech is simply not available while the gag is in - she
+             * physically cannot say it.
+             */
+            if (
+                silenced &&
+                option.requiresSpeech
+            ) {
+
+                continue;
+            }
+
+            candidates.push({
+
+                action: option.action,
+
+                situation:
+                    AIH.MinigameService._buildBouncerSituation(
+                        contextIncidentType,
+                        option,
+                        customer,
+                        intensity
+                    ),
+
+                options: options,
+
+                meta: option
+
+            });
+        }
+
+        return candidates;
+    };
+
+    // =========================================================================
     // SERVE CUSTOMER (MUNDANE BASELINE PATH)
     // =========================================================================
     //
@@ -1659,7 +1982,7 @@ var AIH = AIH || {};
             );
 
         evaluation =
-            AIH.PressureEvaluator.evaluate(
+            AIH.MinigameService._evaluate(
                 situation,
                 options
             );
@@ -1670,6 +1993,23 @@ var AIH = AIH || {};
             evaluation,
             "waitressing: " + incidentType + " with " + customer.name
         );
+
+        if (template.secondaryTrait) {
+
+            /*
+             * Reported at a smaller flat magnitude cut, on top of
+             * whatever _reportOutcome's own score-based scaling already
+             * applies - a secondary factor shouldn't drift as hard as
+             * the primary one on the same event.
+             */
+            AIH.MinigameService._reportOutcome(
+                template.secondaryTrait,
+                template.secondaryDirection,
+                evaluation,
+                "waitressing (secondary factor): " + incidentType + " with " + customer.name,
+                { magnitudeScale: 0.5 }
+            );
+        }
 
         return {
 
@@ -1862,11 +2202,11 @@ var AIH = AIH || {};
         var intensity;
         var options;
         var candidates;
-        var i;
-        var option;
         var winner;
         var backfire;
         var mishapOccurred;
+        var interveneFailed;
+        var ignoreConsequence;
         var wentWell;
         var result;
 
@@ -1880,35 +2220,13 @@ var AIH = AIH || {};
         options =
             AIH.MinigameService._regularPressureOptions(customer);
 
-        candidates = [];
-
-        for (
-            i = 0;
-            i < AIH.MinigameService.BOUNCER_RESPONSES.length;
-            i++
-        ) {
-
-            option =
-                AIH.MinigameService.BOUNCER_RESPONSES[i];
-
-            candidates.push({
-
-                action: option.action,
-
-                situation:
-                    AIH.MinigameService._buildBouncerSituation(
-                        contextIncidentType,
-                        option,
-                        customer,
-                        intensity
-                    ),
-
-                options: options,
-
-                meta: option
-
-            });
-        }
+        candidates =
+            AIH.MinigameService._buildBouncerCandidates(
+                contextIncidentType,
+                customer,
+                intensity,
+                options
+            );
 
         winner =
             AIH.MinigameService._chooseBest(candidates);
@@ -1921,11 +2239,26 @@ var AIH = AIH || {};
             winner.meta.trait,
             winner.meta.direction,
             winner.evaluation,
-            "waitressing confrontation: " + contextIncidentType + " -> " + winner.action
+            "waitressing confrontation: " + contextIncidentType + " -> " + winner.action,
+            winner.meta.unconditionalDriftReport ?
+                { rewardedOverride: true } :
+                undefined
         );
 
         backfire = null;
         mishapOccurred = false;
+        ignoreConsequence = null;
+
+        if (winner.action === "ignore") {
+
+            ignoreConsequence =
+                AIH.MinigameService._resolveIgnoreConsequence(
+                    customer,
+                    contextIncidentType,
+                    options,
+                    intensity
+                );
+        }
 
         if (winner.action === "separate") {
 
@@ -1938,16 +2271,60 @@ var AIH = AIH || {};
                 );
         }
 
+        interveneFailed = false;
+
         if (winner.action === "intervene_physically") {
 
             mishapOccurred =
                 Math.random() <
                 AIH.MinigameService.CONFRONTATION_MISHAP_CHANCE;
+
+            /*
+             * "Fails" covers both the baked-in mishap (wet stone, lost
+             * footing, wardrobe trouble - the same mechanic
+             * AIH_Minigame_Bathhouse.js uses for this option) and the
+             * situation itself simply not going acceptably (reject tier)
+             * even without a mishap. This is separate from and
+             * additional to the normal pride/decrease report above - a
+             * failed physical intervention is a real, unconditional blow
+             * to her sense of her own competence, not something that
+             * should only register if the broader reward-tier logic
+             * happens to line up.
+             */
+            interveneFailed =
+                mishapOccurred ||
+                winner.evaluation.response === "reject";
+
+            if (interveneFailed) {
+
+                AIH.MinigameService._reportOutcome(
+                    "pride",
+                    "decrease",
+                    winner.evaluation,
+                    "waitressing confrontation: physically intervening against " +
+                    contextIncidentType +
+                    " went badly" +
+                    (mishapOccurred ? " (a mishap occurred)" : ""),
+                    {
+                        rewardedOverride: true,
+                        magnitudeScale: 1.6
+                    }
+                );
+            }
         }
 
         wentWell =
             winner.action !== "entertain" &&
-            !(backfire && !backfire.heldGround);
+            !(backfire && !backfire.heldGround) &&
+            !interveneFailed &&
+            !(
+                ignoreConsequence &&
+                ignoreConsequence.outcome !== "disappointed" &&
+                !(
+                    ignoreConsequence.escalated &&
+                    ignoreConsequence.escalationHeldGround
+                )
+            );
 
         result = {
 
@@ -1958,6 +2335,8 @@ var AIH = AIH || {};
             intensity: intensity,
             backfire: backfire,
             mishapOccurred: mishapOccurred,
+            interveneFailed: interveneFailed,
+            ignoreConsequence: ignoreConsequence,
             wentWell: wentWell
 
         };
@@ -1971,9 +2350,197 @@ var AIH = AIH || {};
             wentWell
         );
 
+        AIH.MinigameService._trackCurseReleaseConditions(
+            result
+        );
+
         AIH.MinigameService._logIncident(result);
 
         return result;
+    };
+
+    // =========================================================================
+    // IGNORE CONSEQUENCE
+    // =========================================================================
+    //
+    // Per design decision: ignoring an incident isn't actually a safe
+    // do-nothing default either - the issue with "ignore" was never
+    // about which trait it targets, it was that it had no possible
+    // consequence at all, unlike every other option. Three branches,
+    // rolled in sequence:
+    //
+    //     1. Does anything happen at all? (scales with the customer's
+    //        persistence, same pattern as the separate backfire - a
+    //        low-persistence customer likely just lets it go)
+    //     2. If something happens, does it stay verbal (the customer
+    //        leaves upset, a real but non-violent cost) or genuinely
+    //        escalate to physical? Scales with the underlying incident's
+    //        own danger-proneness (fight_starts/someone_bothering_patron
+    //        are more escalation-prone than customer_refuses_to_leave).
+    //     3. A small residual chance, when nothing else triggers, of a
+    //        mild "customer is just disappointed" outcome - genuinely
+    //        minimal, no mechanical cost, included so "ignore" isn't
+    //        ALWAYS punished, just no longer risk-free.
+    //
+    // The escalation choice below always routes through
+    // _buildBouncerCandidates too, so bit_of_obedient_silence's filter
+    // stays consistent even here - though neither escalation option
+    // (intervene_physically/call_authority) requires speech, so in
+    // practice this never actually removes anything from THIS
+    // particular choice.
+    //
+    // =========================================================================
+
+    AIH.MinigameService.IGNORE_CONSEQUENCE_BASE_CHANCE = 0.35;
+
+    AIH.MinigameService._resolveIgnoreConsequence = function(
+        customer,
+        contextIncidentType,
+        options,
+        intensity
+    ) {
+
+        var somethingChance;
+        var somethingHappens;
+        var escalationShare;
+        var escalates;
+        var escalationCandidates;
+        var escalation;
+
+        somethingChance =
+            AIH.MinigameService._clamp01(
+                AIH.MinigameService.IGNORE_CONSEQUENCE_BASE_CHANCE +
+                AIH.MinigameService._number(customer.persistence, 0.3) * 0.35
+            );
+
+        somethingHappens =
+            Math.random() < somethingChance;
+
+        if (!somethingHappens) {
+
+            return {
+                outcome: "disappointed",
+                escalated: false
+            };
+        }
+
+        /*
+         * Incidents that are already about a physical/dangerous
+         * situation (fight_starts, someone_bothering_patron) are more
+         * likely to tip into real escalation when ignored than a purely
+         * social one (customer_refuses_to_leave) is.
+         */
+        escalationShare =
+            contextIncidentType === "fight_starts" ?
+                0.55 :
+                (
+                    contextIncidentType === "someone_bothering_patron" ?
+                        0.40 :
+                        0.20
+                );
+
+        escalationShare =
+            AIH.MinigameService._clamp01(
+                escalationShare *
+                (intensity / 1.3)
+            );
+
+        escalates =
+            Math.random() < escalationShare;
+
+        if (!escalates) {
+
+            /*
+             * Customer leaves angry - a real, non-violent cost. If she
+             * has a relationship with them, it takes a real hit; if they
+             * have a faction, a small reputation cost applies the same
+             * way an unresolved confrontation elsewhere would.
+             */
+            if (
+                customer.kind === "regular" &&
+                typeof AIH.Relationships !== "undefined" &&
+                AIH.Relationships.modifyAxis
+            ) {
+
+                AIH.Relationships.modifyAxis(
+                    customer.id,
+                    "familiarity",
+                    -3,
+                    "ignored during " + contextIncidentType + " and left upset"
+                );
+            }
+
+            if (
+                customer.faction &&
+                typeof AIH.Reputation !== "undefined" &&
+                AIH.Reputation.modifyAxes
+            ) {
+
+                AIH.Reputation.modifyAxes(
+                    customer.faction,
+                    { reputation: -1 },
+                    customer.name +
+                    " left the tavern angry after being ignored"
+                );
+            }
+
+            return {
+                outcome: "left_angry",
+                escalated: false
+            };
+        }
+
+        /*
+         * Genuinely escalated - same forced-choice pattern as the
+         * separate backfire's escalation (only intervene_physically/
+         * call_authority make sense once it's gone physical).
+         */
+        escalationCandidates =
+            AIH.MinigameService._buildBouncerCandidates(
+                "fight_starts",
+                customer,
+                intensity,
+                options
+            ).filter(function(c) {
+
+                return (
+                    c.action === "intervene_physically" ||
+                    c.action === "call_authority"
+                );
+            });
+
+        escalation =
+            AIH.MinigameService._chooseBest(escalationCandidates);
+
+        if (!escalation) {
+
+            return {
+                outcome: "escalated",
+                escalated: true
+            };
+        }
+
+        AIH.MinigameService._reportOutcome(
+            escalation.meta.trait,
+            escalation.meta.direction,
+            escalation.evaluation,
+            "waitressing: ignoring " + contextIncidentType + " escalated into a forced confrontation",
+            escalation.meta.unconditionalDriftReport ?
+                { rewardedOverride: true } :
+                undefined
+        );
+
+        return {
+
+            outcome: "escalated",
+            escalated: true,
+            escalationAction: escalation.action,
+            escalationEvaluation: escalation.evaluation,
+            escalationHeldGround:
+                escalation.evaluation.response === "reject" ||
+                escalation.evaluation.response === "partial"
+
+        };
     };
 
     // =========================================================================
@@ -1986,6 +2553,14 @@ var AIH = AIH || {};
     // either defuses it or refuses it, which forces a real, higher-danger
     // confrontation - only intervene_physically/call_authority make sense
     // once it has gone that far.
+    //
+    // SEMANTICS: this followUpSituation is a COMPLIANCE-style situation
+    // (real modestyCost/prideCost, same shape as every other request/
+    // entertain situation in this file) - NOT a passive danger threat.
+    // "accept"/"reluctant_accept"/"partial" means she DEFUSES it by
+    // engaging (same as "entertain" elsewhere); "reject" means she
+    // REFUSES that engagement. Defusing is the SAFE path here, refusing
+    // is what provokes the escalation, not the other way around.
     //
     // =========================================================================
 
@@ -2001,6 +2576,7 @@ var AIH = AIH || {};
         var followUpSituation;
         var followUpEvaluation;
         var refused;
+        var escalationCandidates;
         var escalation;
         var escalationHeldGround;
 
@@ -2048,7 +2624,7 @@ var AIH = AIH || {};
             });
 
         followUpEvaluation =
-            AIH.PressureEvaluator.evaluate(
+            AIH.MinigameService._evaluate(
                 followUpSituation,
                 options
             );
@@ -2092,43 +2668,49 @@ var AIH = AIH || {};
          * things have gone physical are on the table. Whether this
          * "went well" now depends entirely on how THAT forced
          * confrontation resolves, not on the fact that she refused in
-         * the first place.
+         * the first place. This is a _chooseBest across ACTIONS
+         * (intervene_physically / call_authority), so "accept"/
+         * "reluctant_accept" here means she successfully commits to and
+         * executes the winning action, matching how those two options
+         * are read everywhere else in this file.
          */
+        escalationCandidates =
+            AIH.MinigameService._buildBouncerCandidates(
+                "fight_starts",
+                customer,
+                intensity,
+                options
+            ).filter(function(c) {
+
+                return (
+                    c.action === "intervene_physically" ||
+                    c.action === "call_authority"
+                );
+            });
+
         escalation =
-            AIH.MinigameService._chooseBest([
+            AIH.MinigameService._chooseBest(escalationCandidates);
 
-                {
-                    action: "intervene_physically",
-                    situation: AIH.MinigameService._buildBouncerSituation(
-                        "fight_starts",
-                        AIH.MinigameService._findBouncerOption("intervene_physically"),
-                        customer,
-                        intensity
-                    ),
-                    options: options,
-                    meta: AIH.MinigameService._findBouncerOption("intervene_physically")
-                },
+        if (!escalation) {
 
-                {
-                    action: "call_authority",
-                    situation: AIH.MinigameService._buildBouncerSituation(
-                        "fight_starts",
-                        AIH.MinigameService._findBouncerOption("call_authority"),
-                        customer,
-                        intensity
-                    ),
-                    options: options,
-                    meta: AIH.MinigameService._findBouncerOption("call_authority")
-                }
-
-            ]);
+            return {
+                triggered: true,
+                heldGround: false,
+                refused: true,
+                evaluation: followUpEvaluation,
+                escalated: true
+            };
+        }
 
         AIH.MinigameService._reportOutcome(
             escalation.meta.trait,
             escalation.meta.direction,
             escalation.evaluation,
             "waitressing confrontation backfire escalated to a forced confrontation after " +
-            contextIncidentType
+            contextIncidentType,
+            escalation.meta.unconditionalDriftReport ?
+                { rewardedOverride: true } :
+                undefined
         );
 
         escalationHeldGround =
@@ -2226,15 +2808,119 @@ var AIH = AIH || {};
                 magnitude * 0.5;
         }
 
-        return AIH.PersonalityDrift.reinforce(
+        if (typeof options.magnitudeScale === "number") {
+
+            magnitude =
+                magnitude * options.magnitudeScale;
+        }
+
+        return AIH.MinigameService._reportOutcomeReinforce(
             trait,
             direction,
-            {
-                rewarded: rewarded,
-                magnitude: magnitude,
-                reason: reason
-            }
+            rewarded,
+            AIH.MinigameService._clamp01(magnitude),
+            reason
         );
+    };
+
+    /*
+     * Split out so the reinforce() call and its ValueDrift follow-up sit
+     * together - AIH.ValueDrift.checkForShift() is a safe, cheap no-op
+     * for any trait it doesn't map or that hasn't internalized yet, so
+     * calling it unconditionally after every reinforce() here is
+     * correct, not wasteful. Mirrors AIH_Minigame_IntimateService.js's
+     * own split for the same reason.
+     */
+    AIH.MinigameService._reportOutcomeReinforce = function(
+        trait,
+        direction,
+        rewarded,
+        magnitude,
+        reason
+    ) {
+
+        var result;
+
+        result =
+            AIH.PersonalityDrift.reinforce(
+                trait,
+                direction,
+                {
+                    rewarded: rewarded,
+                    magnitude: magnitude,
+                    reason: reason
+                }
+            );
+
+        if (
+            typeof AIH.ValueDrift !== "undefined" &&
+            AIH.ValueDrift.checkForShift
+        ) {
+
+            AIH.ValueDrift.checkForShift(
+                trait,
+                direction,
+                rewarded
+            );
+        }
+
+        return result;
+    };
+
+    // =========================================================================
+    // CURSED ITEM RELEASE CONDITION TRACKING
+    // =========================================================================
+    //
+    // Per design direction: bit_of_obedient_silence's own removal
+    // condition (see AIH_CursedItems.js) - three confrontations resolved
+    // wentWell despite being unable to speak clearly - is tracked by this
+    // module directly, the same way AIH_Minigame_TasteTest.js tracks its
+    // own set of items. This module still never decides whether the item
+    // comes off - AIH.CursedItems.isConditionMet()/removeCursedItem()
+    // remain the sole authority on that - it only calls
+    // markConditionMet() once its own tracked count crosses the
+    // threshold.
+    //
+    // =========================================================================
+
+    AIH.MinigameService.OBEDIENT_SILENCE_CONFRONTATIONS_NEEDED = 3;
+
+    AIH.MinigameService._trackCurseReleaseConditions = function(confrontationResult) {
+
+        var state;
+
+        if (
+            !confrontationResult ||
+            !confrontationResult.wentWell ||
+            typeof AIH.CursedItems === "undefined" ||
+            !AIH.CursedItems.isEquipped ||
+            !AIH.CursedItems.isEquipped("bit_of_obedient_silence")
+        ) {
+
+            return;
+        }
+
+        state =
+            AIH.MinigameService._ensure();
+
+        if (!state) {
+            return;
+        }
+
+        state.curseTracking.obedientSilenceConfrontationsWentWell += 1;
+
+        if (
+            state.curseTracking.obedientSilenceConfrontationsWentWell <
+            AIH.MinigameService.OBEDIENT_SILENCE_CONFRONTATIONS_NEEDED
+        ) {
+
+            return;
+        }
+
+        if (AIH.CursedItems.markConditionMet) {
+
+            AIH.CursedItems.markConditionMet("bit_of_obedient_silence");
+        }
     };
 
     // =========================================================================

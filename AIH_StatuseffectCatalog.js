@@ -366,6 +366,124 @@ var AIH = AIH || {};
                     }
                 }
             ]
+        },
+
+        /*
+         * bound: physical restraint, distinct from the coating/emotional
+         * effects above but built the same way - stage data drives both
+         * the narrative side (description/reactions/emotions, same as
+         * every other effect here) AND the actual battle mechanic in
+         * AIH_StatusEffectCutinBridge.js's AIH.RestrainedStruggle, via
+         * the two fields unique to this entry:
+         *
+         *   restrainedParts - which body parts this stage binds:
+         *     "hands_front" | "hands_back" | "legs" (a stage can list
+         *     more than one - stage 3 lists both hands_back and legs).
+         *     RestrainedStruggle reads this to decide which commands
+         *     are available/penalized, never hardcoded per-stage rules
+         *     of its own.
+         *
+         *   restraintModifier - same field slimed already uses, summed
+         *     the same way across every active restraint-relevant state
+         *     (a stacked slimed state's own restraintModifier compounds
+         *     with bound's, from one shared mechanism).
+         */
+        bound: {
+
+            stages: [
+
+                // --- stage 1: light - wrists loosely tied in front ------------
+                {
+                    description:
+                        "Her wrists are loosely bound in front of her - " +
+                        "restrictive, but not much of an obstacle if she takes " +
+                        "a moment to work at it.",
+
+                    restrainedParts: ["hands_front"],
+
+                    dungeonBehaviorTags: ["minor_hindrance"],
+                    townBehaviorTags: ["easily_explained"],
+                    npcReactionTags: ["indifferent", "amused", "brief_comment"],
+
+                    emotionEffects: {
+                        stress: 0.10,
+                        confidence: -0.05
+                    },
+
+                    restraintModifier: 0.25,
+
+                    exposureSituationHint: {
+                        severity: "normal",
+                        embarrassment: 0.10,
+                        dignityCost: 0.10,
+                        freedomCost: 0.15
+                    }
+                },
+
+                // --- stage 2: harder - wrists bound behind her back -----------
+                {
+                    description:
+                        "Her wrists are bound tightly behind her back - she " +
+                        "can still move, still fight, but every motion is " +
+                        "visibly harder without the use of her hands in front " +
+                        "of her.",
+
+                    restrainedParts: ["hands_back"],
+
+                    dungeonBehaviorTags: ["reduced_effectiveness", "significant_hindrance"],
+                    townBehaviorTags: ["cannot_hide_it", "draws_concerned_attention"],
+                    npcReactionTags: ["concerned", "protective", "opportunistic", "scandalized"],
+
+                    emotionEffects: {
+                        stress: 0.25,
+                        confidence: -0.15,
+                        embarrassment: 0.15
+                    },
+
+                    restraintModifier: -0.10,
+
+                    exposureSituationHint: {
+                        severity: "medium",
+                        embarrassment: 0.25,
+                        dignityCost: 0.25,
+                        freedomCost: 0.30,
+                        prideCost: 0.15
+                    }
+                },
+
+                // --- stage 3: near impossible - wrists behind back + ankles ---
+                {
+                    description:
+                        "Wrists bound tightly behind her back, ankles bound " +
+                        "together - barely able to move, let alone fight back " +
+                        "effectively.",
+
+                    restrainedParts: ["hands_back", "legs"],
+
+                    dungeonBehaviorTags: [
+                        "severely_reduced_effectiveness", "cannot_flee", "cannot_dodge"
+                    ],
+                    townBehaviorTags: ["cannot_hide_it", "attracts_a_crowd"],
+                    npcReactionTags: ["alarmed", "protective", "opportunistic", "scandalized"],
+
+                    emotionEffects: {
+                        stress: 0.40,
+                        confidence: -0.30,
+                        embarrassment: 0.25,
+                        fear: 0.15
+                    },
+
+                    restraintModifier: -0.35,
+
+                    exposureSituationHint: {
+                        severity: "rare",
+                        embarrassment: 0.40,
+                        dignityCost: 0.35,
+                        freedomCost: 0.45,
+                        prideCost: 0.25
+                    }
+                }
+            ]
         }
     };
 

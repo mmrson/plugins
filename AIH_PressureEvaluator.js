@@ -1,5 +1,5 @@
 /*:
- * @plugindesc AI Hero Framework - Shared Pressure Evaluator v1.0.0
+ * @plugindesc AI Hero Framework - Shared Pressure Evaluator v1.0.1
  * @author AI Hero Project
  *
  * @help
@@ -89,6 +89,25 @@
  * - call an LLM
  *
  * ============================================================================
+ *
+ * v1.0.1 CHANGELOG (merge of the two v1.0.0 forks)
+ *
+ * - _personalityPressure: the danger-facing "mercy" term is retired (the
+ *   trait no longer exists on AIH.Personality) and replaced with
+ *   AIH.Personality.getDecisiveness() - a derived read combining courage,
+ *   confidence, sociability, and caution. Non-inverted (unlike mercy):
+ *   HIGH decisiveness now pushes toward accepting a dangerous option.
+ *   Read defensively (typeof/method-exists check, 0.5 fallback) so this
+ *   still runs unchanged against an older AIH_Personality.js.
+ *
+ * - evaluate(): resistance now also gets an approvalSeeking amplifier,
+ *   scaled by attachmentDiscount (not domainPressure - domainPressure at
+ *   its existing Config.domainWeight saturates willingness from even mild
+ *   familiarity, confirmed by testing) so her people-pleasing tendency has
+ *   a real, measurable effect specifically when it's someone trusted/
+ *   familiar doing the pressuring, not a flat situation-independent bonus.
+ *
+ * ============================================================================
  */
 
 var AIH = AIH || {};
@@ -103,7 +122,7 @@ var AIH = AIH || {};
 
     AIH.PressureEvaluator = AIH.PressureEvaluator || {};
 
-    AIH.PressureEvaluator.VERSION = "1.0.0";
+    AIH.PressureEvaluator.VERSION = "1.0.1";
 
     AIH.PressureEvaluator._initialized = false;
 
@@ -562,18 +581,28 @@ var AIH = AIH || {};
             0.20;
 
         /*
-         * mercy/approvalSeeking, added when the trait-validity audit found
-         * these were being reinforced by PersonalityDrift but never read
-         * anywhere. There is no dedicated "harm inflicted on someone
-         * else" situation field yet, so mercy uses danger as the closest
-         * available proxy for "how aggressive/forceful this option is" -
-         * low mercy (cruelty) makes aggressive/dangerous options more
-         * appealing, not less.
+         * Replaces the retired "mercy" trait. Danger-facing willingness
+         * used to be driven by raw mercy (cruelty made dangerous options
+         * more appealing); that's now AIH.Personality.getDecisiveness() -
+         * a derived read (see its own extensive comment in
+         * AIH_Personality.js) combining courage, confidence, sociability,
+         * and caution into "is she willing to take a forceful/decisive
+         * action here." Non-inverted (unlike mercy): HIGH decisiveness
+         * pushes toward accepting a dangerous option, not low.
+         *
+         * Reads AIH.Personality.getDecisiveness() directly rather than a
+         * field off the `personality` snapshot object above, since it's
+         * a computed function, not a stored trait.
          */
         pressure +=
             (
-                0.5 -
-                AIH.PressureEvaluator._number(personality.mercy, 0.5)
+                (
+                    typeof AIH.Personality !== "undefined" &&
+                    AIH.Personality.getDecisiveness ?
+                        AIH.Personality.getDecisiveness() :
+                        0.5
+                ) -
+                0.5
             ) *
             AIH.PressureEvaluator._number(situation.danger, 0) *
             0.20;
@@ -843,6 +872,27 @@ var AIH = AIH || {};
 
         resistance -=
             attachmentDiscount;
+
+        /*
+         * approvalSeeking amplified by a trusted/familiar source, per
+         * design decision: her people-pleasing tendency should have a
+         * real, measurable effect specifically when it's someone she
+         * already trusts or knows well doing the pressuring, not a flat
+         * situation-independent bonus alone. Deliberately built on
+         * attachmentDiscount (bounded, 0..0.12 - trust/100 scaled) rather
+         * than domainPressure, which is not bounded the same way and, at
+         * its existing Config.domainWeight (0.65), saturates willingness
+         * to its ceiling from even a mild acquaintance's familiarity
+         * alone - confirmed by testing, not assumed. attachmentDiscount
+         * has real headroom on the resistance side instead.
+         */
+        resistance -=
+            (
+                AIH.PressureEvaluator._number(personality.approvalSeeking, 0.5) -
+                0.5
+            ) *
+            attachmentDiscount *
+            1.2;
 
         // -----------------------------------------------------------------
         // WILLINGNESS

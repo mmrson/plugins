@@ -1,5 +1,5 @@
 /*:
- * @plugindesc AI Hero Framework - Minigame: Taste Testing (Ferment Tasting) v0.1.0
+ * @plugindesc AI Hero Framework - Minigame: Taste Testing (Ferment Tasting) v0.1.2
  * @author AI Hero Project
  *
  * @help
@@ -33,8 +33,10 @@
  * unquestionably from the start.
  *
  * This module owns NO psychology. Every decision the heroine makes comes
- * from AIH.PressureEvaluator.evaluate() reading her real, current
- * Personality/Values/Emotions. This file's only jobs are:
+ * from AIH.PressureEvaluator.evaluate() (via AIH.CursedItems'
+ * evaluateWithPossibleFlip() wrapper, when available - see CURSED ITEM
+ * INTEGRATION below) reading her real, current Personality/Values/
+ * Emotions. This file's only jobs are:
  *
  *     1. Model makers and their ferments as DATA (templates), not code.
  *     2. Turn one sample (or a same-time batch of samples) into
@@ -104,13 +106,66 @@
  *
  * ============================================================================
  *
+ * CURSED ITEM INTEGRATION
+ *
+ * Every decision this module resolves through the shared evaluator goes
+ * through AIH.CursedItems.evaluateWithPossibleFlip() when that module is
+ * loaded (see _evaluate below) rather than calling
+ * AIH.PressureEvaluator.evaluate() directly - so an equipped cursed item
+ * can genuinely flip a tasting/judgment/overwhelm decision, exactly like
+ * any other minigame wired into AIH_CursedItems.js. Beyond the generic
+ * wiring, several specific cursed items (see AIH_CursedItems.js) are
+ * written to interact with THIS minigame explicitly:
+ *
+ *     hooded_ones_favor                a mysterious maker's gift that
+ *                                       floors her trust once triggered
+ *
+ *     casing_of_the_wandering_palate    tips her existing sausage-casing
+ *                                       preference into a genuine bamboo
+ *                                       aversion (see
+ *                                       _containerCompulsionModifier)
+ *
+ *     veil_of_heightened_senses         ties identification accuracy to
+ *                                       being MORE exposed (see
+ *                                       EXPOSURE_LINKED_CURSES)
+ *
+ *     shroud_of_the_hidden_palate        the inverse - ties accuracy to
+ *                                       being MORE covered
+ *
+ *     charm_of_the_eager_mouth          adds a real mishap-chance penalty
+ *                                       to sample_hastily judgments - see
+ *                                       _salivaMishapModifier
+ *
+ *     blindfold_of_the_watched_eyes      amplifies how exposing a sample
+ *                                       situation reads - see
+ *                                       _watchedEyesEmbarrassmentModifier
+ *
+ *     cuffs_of_no_choosing               removes "decline_to_judge" from
+ *                                       her available judgment options -
+ *                                       see _buildJudgmentCandidates
+ *
+ *     leash_of_the_devoted_mouth          floors defiance so low that
+ *                                       refusing a taste at all becomes
+ *                                       genuinely rare - its own release
+ *                                       condition fires the moment she
+ *                                       manages it even once
+ *
+ * All of the above also have their own removalConditionId satisfied by
+ * THIS module's own tracking (see CURSED ITEM RELEASE CONDITION
+ * TRACKING) - no external quest script is required to notice and call
+ * AIH.CursedItems.markConditionMet() for these, though nothing stops one
+ * from also doing so.
+ *
+ * ============================================================================
+ *
  * WHAT THIS MODULE DOES NOT DO
  *
- * - decide her response (PressureEvaluator does)
+ * - decide her response (PressureEvaluator, via CursedItems when present,
+ *   does)
  * - adjust personality directly (PersonalityDrift.reinforce() does, always)
  * - hardcode "if maker is a noble then always X" or similar dev conclusions
  * - decide whether SCBS is enabled (only reads the flag)
- * - build a second pressure evaluator
+ * - build a second pressure evaluator, or a second cursed-item system
  *
  * ============================================================================
  *
@@ -179,7 +234,7 @@ var AIH = AIH || {};
 
     AIH.MinigameTasteTest = AIH.MinigameTasteTest || {};
 
-    AIH.MinigameTasteTest.VERSION = "0.1.0";
+    AIH.MinigameTasteTest.VERSION = "0.1.2";
 
     AIH.MinigameTasteTest.SCHEMA_VERSION = 1;
 
@@ -284,6 +339,22 @@ var AIH = AIH || {};
         return AIH.State._internal();
     };
 
+    AIH.MinigameTasteTest._defaultCurseTracking = function() {
+
+        return {
+
+            hoodedOnesFavorBackfires: 0,
+            wanderingPalateBambooAccepts: 0,
+            veilCoveredIdentifications: 0,
+            shroudExposedIdentifications: 0,
+
+            eagerMouthCleanHastySamples: 0,
+            watchedEyesCorrectIdentifications: 0,
+            cuffsCorrectConfidentGuesses: 0
+
+        };
+    };
+
     AIH.MinigameTasteTest._ensure = function() {
 
         var state;
@@ -336,7 +407,10 @@ var AIH = AIH || {};
                     {},
 
                 avoidMakerGoalIds:
-                    {}
+                    {},
+
+                curseTracking:
+                    AIH.MinigameTasteTest._defaultCurseTracking()
             };
         }
 
@@ -411,6 +485,35 @@ var AIH = AIH || {};
         ) {
 
             state.minigameTasteTest.avoidMakerGoalIds = {};
+        }
+
+        if (
+            !state.minigameTasteTest.curseTracking ||
+            typeof state.minigameTasteTest.curseTracking !== "object"
+        ) {
+
+            state.minigameTasteTest.curseTracking =
+                AIH.MinigameTasteTest._defaultCurseTracking();
+        }
+
+        /*
+         * Additive defaults for saves made before v0.1.2's new counters
+         * existed - ensures a mid-save upgrade doesn't crash on reading
+         * an undefined counter.
+         */
+        var curseDefaults =
+            AIH.MinigameTasteTest._defaultCurseTracking();
+
+        for (var key in curseDefaults) {
+
+            if (
+                curseDefaults.hasOwnProperty(key) &&
+                state.minigameTasteTest.curseTracking[key] === undefined
+            ) {
+
+                state.minigameTasteTest.curseTracking[key] =
+                    curseDefaults[key];
+            }
         }
 
         if (
@@ -492,7 +595,8 @@ var AIH = AIH || {};
     // level), not hardcoded per source.
     //
     // OUTFITS (2): "regular", "tribal_garb" - a session-level costume
-    // swap, not stage-specific.
+    // swap, not stage-specific. Also read directly by the exposure-linked
+    // cursed items (see EXPOSURE/CONTAINER MECHANICS below).
     //
     // CONTAINER VARIANTS SHOWN (2): "bamboo", "sausage_casing" - only
     // matters for the presentation stage (the tube/casing being handed
@@ -1074,8 +1178,7 @@ var AIH = AIH || {};
     // additional real pressures are in play, both fed in through the
     // same sanctioned options.domainPressure/attachmentDiscount channel
     // rather than by trying to make PressureEvaluator read a trait it
-    // doesn't (see the assertiveness/approvalSeeking fix above for why
-    // that path is off-limits):
+    // doesn't:
     //
     //   - approval-seeking group pressure: a heroine who cares more about
     //     others' approval (AIH.Personality.getTrait("approvalSeeking"),
@@ -1189,6 +1292,230 @@ var AIH = AIH || {};
                 (Number(a.attachmentDiscount) || 0) +
                 (Number(b.attachmentDiscount) || 0)
         };
+    };
+
+    // =========================================================================
+    // CURSED ITEM INTEGRATION
+    // =========================================================================
+    //
+    // Every decision in this file that would otherwise call
+    // AIH.PressureEvaluator.evaluate() directly now goes through this
+    // wrapper instead - a drop-in swap for
+    // AIH.CursedItems.evaluateWithPossibleFlip() when that module is
+    // present (byte-for-byte identical to a plain evaluate() call when no
+    // flip-capable cursed item is equipped, or the roll doesn't trigger -
+    // see that module's own header), falling back to the plain evaluator
+    // if AIH.CursedItems isn't loaded at all. recordAction() is called
+    // once per decision point resolved through this wrapper, advancing
+    // the flip clock (and any active trait floor/ceiling - see
+    // AIH_CursedItems.js) for any equipped cursed item, exactly the way
+    // any other minigame using AIH.CursedItems is expected to.
+    //
+    // =========================================================================
+
+    AIH.MinigameTasteTest._evaluate = function(situation, options) {
+
+        var evaluation;
+
+        if (
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.evaluateWithPossibleFlip
+        ) {
+
+            evaluation =
+                AIH.CursedItems.evaluateWithPossibleFlip(situation, options);
+
+        } else {
+
+            evaluation =
+                AIH.PressureEvaluator.evaluate(situation, options);
+        }
+
+        if (
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.recordAction
+        ) {
+
+            AIH.CursedItems.recordAction();
+        }
+
+        if (
+            evaluation &&
+            evaluation.internalConflict &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.recordConflictBelief
+        ) {
+
+            AIH.CursedItems.recordConflictBelief(
+                evaluation.flipItemId || "unknown",
+                "taste test: her real self would have answered differently"
+            );
+        }
+
+        return evaluation;
+    };
+
+    // =========================================================================
+    // EXPOSURE / CONTAINER / MOUTH MECHANICS (cursed items)
+    // =========================================================================
+    //
+    // Several cursed items (see AIH_CursedItems.js) couple specific parts
+    // of this minigame's own mechanics to whether they're equipped:
+    //
+    //   - veil_of_heightened_senses / shroud_of_the_hidden_palate couple
+    //     identification accuracy to how covered up she currently is
+    //     (AIH.MinigameTasteTest.getCurrentOutfit()), in opposite
+    //     directions.
+    //
+    //   - casing_of_the_wandering_palate couples her aversion to bamboo
+    //     containers specifically (see _containerCompulsionModifier).
+    //
+    //   - charm_of_the_eager_mouth adds a genuine mishap-chance penalty
+    //     to sample_hastily judgments (see _salivaMishapModifier) -
+    //     excess saliva makes her fumble the tube, a visible tell she
+    //     can't hide even blindfolded.
+    //
+    //   - blindfold_of_the_watched_eyes amplifies how exposing every
+    //     sample situation reads (see
+    //     _watchedEyesEmbarrassmentModifier) - her involuntary
+    //     expressions are readable by everyone around her even though
+    //     she herself can see nothing at all.
+    //
+    // =========================================================================
+
+    AIH.MinigameTasteTest.EXPOSURE_LINKED_CURSES = {
+
+        veil_of_heightened_senses: {
+            favoredOutfit: "tribal_garb",
+            favoredBonus: 0.20,
+            unfavoredPenalty: -0.15
+        },
+
+        shroud_of_the_hidden_palate: {
+            favoredOutfit: "regular",
+            favoredBonus: 0.20,
+            unfavoredPenalty: -0.15
+        }
+
+    };
+
+    AIH.MinigameTasteTest._exposureIdentificationModifier = function() {
+
+        var total;
+        var itemId;
+        var config;
+        var currentOutfit;
+
+        total = 0;
+
+        if (
+            typeof AIH.CursedItems === "undefined" ||
+            !AIH.CursedItems.isEquipped
+        ) {
+
+            return 0;
+        }
+
+        currentOutfit =
+            AIH.MinigameTasteTest.getCurrentOutfit();
+
+        for (itemId in AIH.MinigameTasteTest.EXPOSURE_LINKED_CURSES) {
+
+            if (
+                !AIH.MinigameTasteTest.EXPOSURE_LINKED_CURSES.hasOwnProperty(
+                    itemId
+                )
+            ) {
+
+                continue;
+            }
+
+            if (!AIH.CursedItems.isEquipped(itemId)) {
+                continue;
+            }
+
+            config =
+                AIH.MinigameTasteTest.EXPOSURE_LINKED_CURSES[itemId];
+
+            total +=
+                (currentOutfit === config.favoredOutfit) ?
+                    config.favoredBonus :
+                    config.unfavoredPenalty;
+        }
+
+        return total;
+    };
+
+    AIH.MinigameTasteTest.BAMBOO_COMPULSION_AVERSION = 0.25;
+
+    /*
+     * casing_of_the_wandering_palate's bamboo aversion, folded into a
+     * sample situation's embarrassment when the tube in question is
+     * bamboo and the curse is equipped - representing genuine discomfort
+     * at being handed the "wrong" container, on top of whatever the
+     * batch's own pressure values already are.
+     */
+    AIH.MinigameTasteTest._containerCompulsionModifier = function(maker) {
+
+        if (
+            !maker ||
+            maker.containerType !== "bamboo" ||
+            typeof AIH.CursedItems === "undefined" ||
+            !AIH.CursedItems.isEquipped ||
+            !AIH.CursedItems.isEquipped("casing_of_the_wandering_palate")
+        ) {
+
+            return 0;
+        }
+
+        return AIH.MinigameTasteTest.BAMBOO_COMPULSION_AVERSION;
+    };
+
+    AIH.MinigameTasteTest.SALIVA_MISHAP_BONUS = 0.15;
+
+    /*
+     * charm_of_the_eager_mouth: excess saliva makes her genuinely more
+     * likely to fumble a tube during a rushed sample_hastily judgment -
+     * an additive bump to the mishap chance _rollMishap already
+     * computes, not a separate roll.
+     */
+    AIH.MinigameTasteTest._salivaMishapModifier = function() {
+
+        if (
+            typeof AIH.CursedItems === "undefined" ||
+            !AIH.CursedItems.isEquipped
+        ) {
+
+            return 0;
+        }
+
+        return AIH.CursedItems.isEquipped("charm_of_the_eager_mouth") ?
+            AIH.MinigameTasteTest.SALIVA_MISHAP_BONUS :
+            0;
+    };
+
+    AIH.MinigameTasteTest.WATCHED_EYES_EMBARRASSMENT_BONUS = 0.20;
+
+    /*
+     * blindfold_of_the_watched_eyes: her reactions are readable by
+     * everyone around her even though she herself is blind - a flat
+     * additive bump to every sample situation's embarrassment while it's
+     * equipped, on top of whatever publicity/intensity already
+     * contribute.
+     */
+    AIH.MinigameTasteTest._watchedEyesEmbarrassmentModifier = function() {
+
+        if (
+            typeof AIH.CursedItems === "undefined" ||
+            !AIH.CursedItems.isEquipped
+        ) {
+
+            return 0;
+        }
+
+        return AIH.CursedItems.isEquipped("blindfold_of_the_watched_eyes") ?
+            AIH.MinigameTasteTest.WATCHED_EYES_EMBARRASSMENT_BONUS :
+            0;
     };
 
     // =========================================================================
@@ -1345,10 +1672,17 @@ var AIH = AIH || {};
              * publicity folds into embarrassment; batch size/authority
              * (via intensity) scale the whole thing up together, same
              * mapping note Bathhouse's buildSituation already documents.
+             * casing_of_the_wandering_palate's bamboo aversion (see
+             * _containerCompulsionModifier above) and
+             * blindfold_of_the_watched_eyes's flat exposure bump (see
+             * _watchedEyesEmbarrassmentModifier above) both fold in
+             * here too, on top of the ordinary publicity/intensity term.
              */
             embarrassment:
                 AIH.MinigameTasteTest._clamp01(
-                    0.15 * intensity
+                    (0.15 * intensity) +
+                    AIH.MinigameTasteTest._containerCompulsionModifier(maker) +
+                    AIH.MinigameTasteTest._watchedEyesEmbarrassmentModifier()
                 ),
 
             dignityCost:
@@ -1487,6 +1821,7 @@ var AIH = AIH || {};
         var evaluation;
         var driftResult;
         var media;
+        var conflictLine;
 
         situation =
             AIH.MinigameTasteTest.buildSampleSituation(
@@ -1505,7 +1840,7 @@ var AIH = AIH || {};
             );
 
         evaluation =
-            AIH.PressureEvaluator.evaluate(
+            AIH.MinigameTasteTest._evaluate(
                 situation,
                 options
             );
@@ -1526,6 +1861,15 @@ var AIH = AIH || {};
                     evaluation.response +
                     ")"
             );
+
+        conflictLine =
+            (
+                evaluation.internalConflict &&
+                typeof AIH.CursedItems !== "undefined" &&
+                AIH.CursedItems.getConflictLine
+            ) ?
+                AIH.CursedItems.getConflictLine("inhibition") :
+                null;
 
         media = {
 
@@ -1584,6 +1928,17 @@ var AIH = AIH || {};
 
             driftResult: driftResult,
 
+            /*
+             * Cursed-item context, per AIH.CursedItems.evaluateWithPossibleFlip's
+             * own return shape - flipped/internalConflict/flipItemId pass
+             * straight through from the evaluation, conflictLine is this
+             * module's own resolved narration for it.
+             */
+            flipped: !!evaluation.flipped,
+            internalConflict: !!evaluation.internalConflict,
+            flipItemId: evaluation.flipItemId || null,
+            conflictLine: conflictLine,
+
             media: media
         };
     };
@@ -1635,21 +1990,34 @@ var AIH = AIH || {};
         return state.makerSignatureMemory[maker.regularKey];
     };
 
+    /*
+     * Base confidence from repeat exposure to this specific maker, plus
+     * the exposure-linked cursed-item modifier (see EXPOSURE/CONTAINER/
+     * MOUTH MECHANICS above) - the modifier applies regardless of maker
+     * source (it's about HER state, not the maker's), but only ever has
+     * a nonzero effect when one of the two exposure-linked items is
+     * actually equipped.
+     */
     AIH.MinigameTasteTest._identificationConfidence = function(maker) {
 
         var record;
+        var base;
 
         record =
             AIH.MinigameTasteTest._signatureRecord(maker);
 
-        if (!record) {
-            return 0;
-        }
+        base =
+            record ?
+                Math.min(
+                    AIH.MinigameTasteTest.IDENTIFICATION_CONFIDENCE_CAP,
+                    record.timesTasted *
+                        AIH.MinigameTasteTest.IDENTIFICATION_CONFIDENCE_PER_TASTING
+                ) :
+                0;
 
-        return Math.min(
-            AIH.MinigameTasteTest.IDENTIFICATION_CONFIDENCE_CAP,
-            record.timesTasted *
-                AIH.MinigameTasteTest.IDENTIFICATION_CONFIDENCE_PER_TASTING
+        return AIH.MinigameTasteTest._clamp01(
+            base +
+            AIH.MinigameTasteTest._exposureIdentificationModifier()
         );
     };
 
@@ -1911,9 +2279,10 @@ var AIH = AIH || {};
     // here, it's "the call is genuinely hard, so how she HANDLES making
     // it becomes its own decision," not a fixed per-request script.
     //
-    // Four candidates, same one-evaluator-per-candidate pattern as
-    // Bathhouse's _chooseBest, with two genuinely different KINDS of risk
-    // (not just a flat risk ladder):
+    // Four candidates (three when cuffs_of_no_choosing removes
+    // "decline_to_judge" - see below), same one-evaluator-per-candidate
+    // pattern as Bathhouse's _chooseBest, with two genuinely different
+    // KINDS of risk (not just a flat risk ladder):
     //
     //   guess_confidently     - names a maker outright. Safe to execute,
     //                          but risks a SOCIAL backfire if wrong: a
@@ -1930,6 +2299,8 @@ var AIH = AIH || {};
     //                          at all. Safest for pride/dignity, small
     //                          flat cost, no boundary trait touched at
     //                          all - mirrors Bathhouse's call_for_help.
+    //                          Requires free hands - see
+    //                          cuffs_of_no_choosing below.
     //
     //   sample_hastily         - rushes through the whole batch quickly to
     //                          be done with it. Genuinely risky in a
@@ -1938,7 +2309,9 @@ var AIH = AIH || {};
     //                          lose or mix up a tube - it means the
     //                          ferment ends up spilled over her instead
     //                          of in her mouth. Not a social escalation,
-    //                          a procedural one.
+    //                          a procedural one - and genuinely more
+    //                          likely while charm_of_the_eager_mouth is
+    //                          equipped (see _salivaMishapModifier).
     //
     // =========================================================================
 
@@ -1956,14 +2329,29 @@ var AIH = AIH || {};
     AIH.MinigameTasteTest._chooseBest = function(candidates) {
 
         var best;
-        var bestRank;
+        var bestScore;
         var i;
         var candidate;
         var evaluation;
-        var rank;
 
+        /*
+         * Ranks candidates by raw score alone, NOT by a tier-weighted
+         * rank. An earlier version ranked by
+         * (RESPONSE_RANK[response] * 10 + score) - the same collapse bug
+         * AIH_Minigame_Service.js had and was rewritten to fix (see that
+         * file's own _chooseBest comment for the full explanation): the
+         * *10 multiplier manufactures artificial ~10-point margins out of
+         * tier-boundary crossings that are often only ~0.02-0.05 in real
+         * score terms, which then swamps all the legitimate variation
+         * (different makers, different drifted personality) this system
+         * exists to produce - whichever candidate happens to cross a
+         * boundary wins almost every trial regardless of context. Ranking
+         * by raw score means the actual best-scoring candidate always
+         * wins, by a margin proportional to how much better it actually
+         * is.
+         */
         best = null;
-        bestRank = -1;
+        bestScore = -Infinity;
 
         for (
             i = 0;
@@ -1975,23 +2363,14 @@ var AIH = AIH || {};
                 candidates[i];
 
             evaluation =
-                AIH.PressureEvaluator.evaluate(
+                AIH.MinigameTasteTest._evaluate(
                     candidate.situation,
                     candidate.options || {}
                 );
 
-            rank =
-                (
-                    AIH.MinigameTasteTest.RESPONSE_RANK[
-                        evaluation.response
-                    ] || 0
-                ) *
-                10 +
-                evaluation.score;
+            if (evaluation.score > bestScore) {
 
-            if (rank > bestRank) {
-
-                bestRank = rank;
+                bestScore = evaluation.score;
 
                 best = {
                     action: candidate.action,
@@ -2014,6 +2393,7 @@ var AIH = AIH || {};
         var intensity;
         var options;
         var candidates;
+        var handsFree;
 
         intensity =
             AIH.MinigameTasteTest._batchIntensity(
@@ -2098,19 +2478,16 @@ var AIH = AIH || {};
 
             meta: {
                 /*
-                 * approvalSeeking was the original choice here, but
-                 * PressureEvaluator never reads approvalSeeking/mercy/
-                 * trust/defiance at all (confirmed against the actual
-                 * evaluator code) - reinforcing it would be pure flavor
-                 * with zero effect on future resistance. assertiveness
-                 * IS read directly (see the embarrassment term in
-                 * _personalityPressure), and declining to commit to a
-                 * confident guess is a genuine, real data point on it -
-                 * drifting it down here actually changes how she resists
-                 * next time.
+                 * approvalSeeking - both mechanically and thematically
+                 * the right fit: it IS read by the current
+                 * AIH_PressureEvaluator.js (a flat willingness nudge, and
+                 * the attachmentDiscount-scaled resistance term), and
+                 * declining to commit to a confident guess specifically
+                 * to avoid displeasing anyone is exactly what
+                 * approvalSeeking describes.
                  */
-                driftTrait: "assertiveness",
-                driftDirection: "decrease"
+                driftTrait: "approvalSeeking",
+                driftDirection: "increase"
             },
 
             situation:
@@ -2153,55 +2530,69 @@ var AIH = AIH || {};
         });
 
         // --- decline_to_judge (safe, no boundary trait touched) ----------
+        //
+        // cuffs_of_no_choosing: her hands are bound too tightly to set
+        // the tube aside without answering for it - this candidate is
+        // simply not physically available while it's equipped.
 
-        candidates.push({
+        handsFree =
+            !(
+                typeof AIH.CursedItems !== "undefined" &&
+                AIH.CursedItems.isEquipped &&
+                AIH.CursedItems.isEquipped("cuffs_of_no_choosing")
+            );
 
-            action: "decline_to_judge",
+        if (handsFree) {
 
-            options: options,
+            candidates.push({
 
-            meta: {
-                driftTrait: null,
-                driftDirection: null
-            },
+                action: "decline_to_judge",
 
-            situation:
-                AIH.PressureEvaluator.normalizeSituation({
+                options: options,
 
-                    id:
-                        "tastetest_judgment_decline_" +
-                        maker.id +
-                        "_" +
-                        Date.now(),
+                meta: {
+                    driftTrait: null,
+                    driftDirection: null
+                },
 
-                    type: "taste_test_judgment",
-                    category: "taste_testing",
+                situation:
+                    AIH.PressureEvaluator.normalizeSituation({
 
-                    description:
-                        "She tastes it, but declines to rate or guess.",
+                        id:
+                            "tastetest_judgment_decline_" +
+                            maker.id +
+                            "_" +
+                            Date.now(),
 
-                    severity: "normal",
+                        type: "taste_test_judgment",
+                        category: "taste_testing",
 
-                    reward: 8,
+                        description:
+                            "She tastes it, but declines to rate or guess.",
 
-                    danger: 0,
+                        severity: "normal",
 
-                    embarrassment: 0,
+                        reward: 8,
 
-                    dignityCost:
-                        AIH.MinigameTasteTest._clamp01(0.06 * intensity),
+                        danger: 0,
 
-                    freedomCost: 0,
+                        embarrassment: 0,
 
-                    modestyCost: 0,
+                        dignityCost:
+                            AIH.MinigameTasteTest._clamp01(0.06 * intensity),
 
-                    prideCost:
-                        AIH.MinigameTasteTest._clamp01(0.08 * intensity),
+                        freedomCost: 0,
 
-                    survivalBenefit: 0,
-                    combatAdvantage: 0
-                })
-        });
+                        modestyCost: 0,
+
+                        prideCost:
+                            AIH.MinigameTasteTest._clamp01(0.08 * intensity),
+
+                        survivalBenefit: 0,
+                        combatAdvantage: 0
+                    })
+            });
+        }
 
         // --- sample_hastily (the procedurally/physically risky one) ------
 
@@ -2315,7 +2706,9 @@ var AIH = AIH || {};
      * The sample_hastily mishap: a chance (same shape) of fumbling a tube
      * while blindfolded - the ferment ends up spilled over her instead of
      * lost or mixed up - a distinct KIND of downside (procedural/physical)
-     * from the backfire above (social).
+     * from the backfire above (social). charm_of_the_eager_mouth adds a
+     * real, equipped-only bump to this chance via
+     * _salivaMishapModifier.
      */
     AIH.MinigameTasteTest._rollMishap = function(maker, batchContext) {
 
@@ -2331,12 +2724,15 @@ var AIH = AIH || {};
 
         chance =
             AIH.MinigameTasteTest._clamp01(
-                AIH.MinigameTasteTest.MISHAP_BASE_CHANCE *
-                intensity *
                 (
-                    1 -
-                    (AIH.MinigameTasteTest._palateLevel() * 0.6)
-                )
+                    AIH.MinigameTasteTest.MISHAP_BASE_CHANCE *
+                    intensity *
+                    (
+                        1 -
+                        (AIH.MinigameTasteTest._palateLevel() * 0.6)
+                    )
+                ) +
+                AIH.MinigameTasteTest._salivaMishapModifier()
             );
 
         return Math.random() < chance;
@@ -2349,6 +2745,7 @@ var AIH = AIH || {};
         var driftResult;
         var backfire;
         var mishapOccurred;
+        var conflictLine;
         var result;
 
         candidates =
@@ -2406,6 +2803,17 @@ var AIH = AIH || {};
                 AIH.MinigameTasteTest._rollMishap(maker, batchContext);
         }
 
+        conflictLine =
+            (
+                winner.evaluation.internalConflict &&
+                typeof AIH.CursedItems !== "undefined" &&
+                AIH.CursedItems.getConflictLine
+            ) ?
+                AIH.CursedItems.getConflictLine(
+                    winner.meta.driftTrait || "unknown"
+                ) :
+                null;
+
         result = {
 
             chosenAction: winner.action,
@@ -2418,6 +2826,11 @@ var AIH = AIH || {};
             mishapOccurred: mishapOccurred,
 
             driftResult: driftResult,
+
+            flipped: !!winner.evaluation.flipped,
+            internalConflict: !!winner.evaluation.internalConflict,
+            flipItemId: winner.evaluation.flipItemId || null,
+            conflictLine: conflictLine,
 
             media:
                 AIH.MinigameTasteTest.resolveMediaAsset(
@@ -2931,6 +3344,245 @@ var AIH = AIH || {};
         );
     };
 
+    // =========================================================================
+    // CURSED ITEM RELEASE CONDITION TRACKING
+    // =========================================================================
+    //
+    // Per design direction: some cursed items (see AIH_CursedItems.js)
+    // are written so that satisfying their own removalConditionId is
+    // something this specific minigame can observe and track on its own,
+    // rather than requiring an external quest/event script to notice and
+    // call markConditionMet() by hand. This module still never decides
+    // WHETHER the item comes off - AIH.CursedItems.isConditionMet()/
+    // removeCursedItem() remain the sole authority on that - it only
+    // calls markConditionMet() once its own tracked count crosses the
+    // threshold, exactly the same call any other quest script would make.
+    //
+    // =========================================================================
+
+    AIH.MinigameTasteTest.HOODED_ONES_FAVOR_BACKFIRES_NEEDED = 2;
+    AIH.MinigameTasteTest.WANDERING_PALATE_BAMBOO_ACCEPTS_NEEDED = 3;
+    AIH.MinigameTasteTest.VEIL_COVERED_IDS_NEEDED = 3;
+    AIH.MinigameTasteTest.SHROUD_EXPOSED_IDS_NEEDED = 3;
+    AIH.MinigameTasteTest.EAGER_MOUTH_CLEAN_HASTY_SAMPLES_NEEDED = 3;
+    AIH.MinigameTasteTest.WATCHED_EYES_CORRECT_IDS_NEEDED = 3;
+    AIH.MinigameTasteTest.CUFFS_CORRECT_CONFIDENT_GUESSES_NEEDED = 3;
+
+    AIH.MinigameTasteTest._curseTracking = function() {
+
+        var state;
+
+        state =
+            AIH.MinigameTasteTest._ensure();
+
+        if (!state) {
+            return null;
+        }
+
+        return state.curseTracking;
+    };
+
+    AIH.MinigameTasteTest._markCurseConditionIfMet = function(itemId, count, needed) {
+
+        if (
+            count < needed ||
+            typeof AIH.CursedItems === "undefined" ||
+            !AIH.CursedItems.isEquipped ||
+            !AIH.CursedItems.isEquipped(itemId) ||
+            !AIH.CursedItems.markConditionMet
+        ) {
+
+            return;
+        }
+
+        AIH.CursedItems.markConditionMet(itemId);
+    };
+
+    AIH.MinigameTasteTest._trackCurseReleaseConditions = function(
+        maker,
+        identification,
+        sampleOutcome,
+        judgmentOutcome
+    ) {
+
+        var tracking;
+        var currentOutfit;
+
+        tracking =
+            AIH.MinigameTasteTest._curseTracking();
+
+        if (!tracking) {
+            return;
+        }
+
+        // --- hooded_ones_favor: two misidentification backfires. --------
+
+        if (
+            judgmentOutcome &&
+            judgmentOutcome.backfire &&
+            judgmentOutcome.backfire.triggered &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("hooded_ones_favor")
+        ) {
+
+            tracking.hoodedOnesFavorBackfires += 1;
+
+            AIH.MinigameTasteTest._markCurseConditionIfMet(
+                "hooded_ones_favor",
+                tracking.hoodedOnesFavorBackfires,
+                AIH.MinigameTasteTest.HOODED_ONES_FAVOR_BACKFIRES_NEEDED
+            );
+        }
+
+        // --- casing_of_the_wandering_palate: three accepted bamboo
+        // samples despite the compulsion. ---------------------------------
+
+        if (
+            maker &&
+            maker.containerType === "bamboo" &&
+            sampleOutcome &&
+            (
+                sampleOutcome.response === "accept" ||
+                sampleOutcome.response === "reluctant_accept"
+            ) &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("casing_of_the_wandering_palate")
+        ) {
+
+            tracking.wanderingPalateBambooAccepts += 1;
+
+            AIH.MinigameTasteTest._markCurseConditionIfMet(
+                "casing_of_the_wandering_palate",
+                tracking.wanderingPalateBambooAccepts,
+                AIH.MinigameTasteTest.WANDERING_PALATE_BAMBOO_ACCEPTS_NEEDED
+            );
+        }
+
+        // --- charm_of_the_eager_mouth: three sample_hastily judgments
+        // resolved without a mishap. ---------------------------------------
+
+        if (
+            judgmentOutcome &&
+            judgmentOutcome.chosenAction === "sample_hastily" &&
+            !judgmentOutcome.mishapOccurred &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("charm_of_the_eager_mouth")
+        ) {
+
+            tracking.eagerMouthCleanHastySamples += 1;
+
+            AIH.MinigameTasteTest._markCurseConditionIfMet(
+                "charm_of_the_eager_mouth",
+                tracking.eagerMouthCleanHastySamples,
+                AIH.MinigameTasteTest.EAGER_MOUTH_CLEAN_HASTY_SAMPLES_NEEDED
+            );
+        }
+
+        // --- cuffs_of_no_choosing: three correct guess_confidently
+        // judgments. ---------------------------------------------------------
+
+        if (
+            judgmentOutcome &&
+            judgmentOutcome.chosenAction === "guess_confidently" &&
+            identification &&
+            identification.correct &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("cuffs_of_no_choosing")
+        ) {
+
+            tracking.cuffsCorrectConfidentGuesses += 1;
+
+            AIH.MinigameTasteTest._markCurseConditionIfMet(
+                "cuffs_of_no_choosing",
+                tracking.cuffsCorrectConfidentGuesses,
+                AIH.MinigameTasteTest.CUFFS_CORRECT_CONFIDENT_GUESSES_NEEDED
+            );
+        }
+
+        // --- leash_of_the_devoted_mouth: refusing even once, despite the
+        // ceiling on defiance, is enough - checked against BOTH the plain
+        // sample response and any judgment response, since either is a
+        // genuine "no" that got through. -------------------------------------
+
+        if (
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("leash_of_the_devoted_mouth") &&
+            (
+                (sampleOutcome && sampleOutcome.response === "reject") ||
+                (judgmentOutcome && judgmentOutcome.response === "reject")
+            )
+        ) {
+
+            AIH.CursedItems.markConditionMet("leash_of_the_devoted_mouth");
+        }
+
+        // --- veil_of_heightened_senses / shroud_of_the_hidden_palate /
+        // blindfold_of_the_watched_eyes: correct identification while in
+        // the relevant state, proving her judgment doesn't depend on the
+        // curse. identification.correct already reflects the real roll
+        // from _attemptIdentification, whether or not a hard-call
+        // judgment was triggered on top of it. ----------------------------
+
+        if (!identification || !identification.correct) {
+            return;
+        }
+
+        currentOutfit =
+            AIH.MinigameTasteTest.getCurrentOutfit();
+
+        if (
+            currentOutfit === "regular" &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("veil_of_heightened_senses")
+        ) {
+
+            tracking.veilCoveredIdentifications += 1;
+
+            AIH.MinigameTasteTest._markCurseConditionIfMet(
+                "veil_of_heightened_senses",
+                tracking.veilCoveredIdentifications,
+                AIH.MinigameTasteTest.VEIL_COVERED_IDS_NEEDED
+            );
+        }
+
+        if (
+            currentOutfit === "tribal_garb" &&
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("shroud_of_the_hidden_palate")
+        ) {
+
+            tracking.shroudExposedIdentifications += 1;
+
+            AIH.MinigameTasteTest._markCurseConditionIfMet(
+                "shroud_of_the_hidden_palate",
+                tracking.shroudExposedIdentifications,
+                AIH.MinigameTasteTest.SHROUD_EXPOSED_IDS_NEEDED
+            );
+        }
+
+        if (
+            typeof AIH.CursedItems !== "undefined" &&
+            AIH.CursedItems.isEquipped &&
+            AIH.CursedItems.isEquipped("blindfold_of_the_watched_eyes")
+        ) {
+
+            tracking.watchedEyesCorrectIdentifications += 1;
+
+            AIH.MinigameTasteTest._markCurseConditionIfMet(
+                "blindfold_of_the_watched_eyes",
+                tracking.watchedEyesCorrectIdentifications,
+                AIH.MinigameTasteTest.WATCHED_EYES_CORRECT_IDS_NEEDED
+            );
+        }
+    };
+
     AIH.MinigameTasteTest.resolveBatch = function(makers) {
 
         var batchContext;
@@ -3052,6 +3704,13 @@ var AIH = AIH || {};
             AIH.MinigameTasteTest._recordTasting(maker);
 
             AIH.MinigameTasteTest._recordGlobalTasting();
+
+            AIH.MinigameTasteTest._trackCurseReleaseConditions(
+                maker,
+                identification,
+                sampleOutcome,
+                judgmentOutcome
+            );
 
             results.push({
 

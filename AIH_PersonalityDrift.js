@@ -1,5 +1,5 @@
 /*:
- * @plugindesc AI Hero Framework - Personality Drift System v0.1.0
+ * @plugindesc AI Hero Framework - Personality Drift System v0.1.1
  * @author AI Hero Project
  *
  * @help
@@ -89,6 +89,19 @@
  *
  * ============================================================================
  *
+ * v0.1.1 CHANGELOG
+ *
+ * - Removed the "mercy" entry from NARRATIVES. "mercy" was retired as a
+ *   standalone stored trait in AIH_Personality.js v0.2.0 (replaced by the
+ *   derived getDecisiveness() composite - see that file's own comment) -
+ *   reinforce() already silently no-ops for it via its
+ *   AIH.Personality.hasTrait() guard, so this was dead data left over
+ *   from before that migration, not a functional bug. Removed rather than
+ *   left in place so this table doesn't keep implying "mercy" is still a
+ *   live reinforcement target for anything reading it directly.
+ *
+ * ============================================================================
+ *
  * @command Show
  * @text Show Drift Status
  * @desc Displays streaks and internalization status for every tracked trait.
@@ -110,7 +123,7 @@ var AIH = AIH || {};
 
     AIH.PersonalityDrift = AIH.PersonalityDrift || {};
 
-    AIH.PersonalityDrift.VERSION = "0.1.0";
+    AIH.PersonalityDrift.VERSION = "0.1.1";
 
     AIH.PersonalityDrift.SCHEMA_VERSION = 1;
 
@@ -227,6 +240,12 @@ var AIH = AIH || {};
     // original 9 traits later) fall back to a generic auto-generated
     // proposition rather than failing.
     //
+    // Kept in sync with AIH.Personality.TRAITS (currently the original 9
+    // plus assertiveness/inhibition/approvalSeeking/trust/defiance/
+    // attentionSeeking - "mercy" was part of that boundary/drift set
+    // originally but has since been retired as a stored trait; see
+    // AIH_Personality.js's getDecisiveness()).
+    //
     // =========================================================================
 
     AIH.PersonalityDrift.NARRATIVES = {
@@ -239,11 +258,6 @@ var AIH = AIH || {};
         approvalSeeking: {
             increase: "Making people happy is worth adjusting what I'd normally want.",
             decrease: "What I want matters more than whether they approve."
-        },
-
-        mercy: {
-            decrease: "Being harsh gets results, and that's fine.",
-            increase: "Showing mercy here is the right call, even if it costs me."
         },
 
         trust: {

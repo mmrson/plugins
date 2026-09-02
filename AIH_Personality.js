@@ -73,14 +73,17 @@ var AIH = AIH || {};
     // =========================================================================
     //
     // v0.2.0 adds the "boundary/drift" trait set from the minigame design
-    // pass (Personality Drift RPG handoff): mercy, assertiveness,
-    // inhibition, approvalSeeking, trust, defiance, attentionSeeking.
+    // pass (Personality Drift RPG handoff): assertiveness, inhibition,
+    // approvalSeeking, trust, defiance, attentionSeeking. ("mercy" was
+    // originally part of this set too but has since been retired as a
+    // standalone stored trait - see getDecisiveness() below, which
+    // replaces its formula role with a derived composite of courage/
+    // confidence/sociability/caution instead.)
     //
     // These follow the same convention as the original 9: each trait name
     // names the HIGH pole (1.0 = a lot of that named quality), not a
     // bipolar pair.
     //
-    //     mercy             0 = cruel                1 = compassionate
     //     assertiveness     0 = passive               1 = assertive
     //     inhibition        0 = uninhibited            1 = reserved/inhibited
     //     approvalSeeking   0 = self-directed           1 = people-pleasing
@@ -121,7 +124,6 @@ var AIH = AIH || {};
         "sociability",
         "confidence",
 
-        "mercy",
         "assertiveness",
         "inhibition",
         "approvalSeeking",
@@ -156,8 +158,6 @@ var AIH = AIH || {};
             sociability: 0.55,
 
             confidence: 0.95,
-
-            mercy: 0.65,
 
             assertiveness: 0.85,
 
@@ -432,6 +432,111 @@ var AIH = AIH || {};
     };
 
     // =========================================================================
+    // DECISIVENESS (replaces the retired "mercy" trait)
+    // =========================================================================
+    //
+    // "mercy" was retired - it was a standalone stored trait with no
+    // richer relationship to anything else, and its only formula role
+    // (AIH_PressureEvaluator._personalityPressure's danger term) was
+    // really asking a bigger question than "how cruel is she": whether
+    // she's willing to take a forceful/aggressive/decisive action at all.
+    // That's better modeled as a DERIVED read, exactly like
+    // getEffectiveAssertiveness() above, not a fifth independent trait to
+    // separately drift - it composes out of traits that already exist and
+    // already drift on their own:
+    //
+    //     - is this socially acceptable, or does it damage how others see
+    //       her? -> sociability (how much she cares about that cost at
+    //       all - high sociability makes a forceful action cost more)
+    //     - what's the risk to herself? -> caution (high caution makes
+    //       personal risk weigh more heavily)
+    //     - can she actually pull this off? -> confidence (self-efficacy;
+    //       a courageous but genuinely unconfident person still hesitates
+    //       somewhat, so this scales rather than gates)
+    //     - if the above come back affirmative (acceptable cost, tolerable
+    //       risk, believes she can do it) - does she have the courage to
+    //       actually act on it? -> courage, applied as the final
+    //       multiplier, since it's the trait that turns "this seems
+    //       justified" into actually doing it.
+    //
+    // Because this reads live from Personality traits every time rather
+    // than storing its own value, it drifts automatically as courage/
+    // confidence/sociability/caution drift via ordinary
+    // AIH.PersonalityDrift.reinforce() calls on THOSE traits - there is
+    // no separate "decisiveness" reinforce target, and there should never
+    // be one; a minigame reporting an outcome that this composite should
+    // reflect picks whichever underlying trait the outcome actually was
+    // about (courage if it was about facing danger head-on, confidence if
+    // it was about self-belief, etc).
+    //
+    // Multiplicative, not additive - each factor can meaningfully
+    // suppress the result toward 0 (a very cautious OR very sociable OR
+    // very unconfident heroine should read as genuinely hesitant, not
+    // just mildly discounted), while courage as the outermost multiplier
+    // means a heroine with zero courage never reads as decisive
+    // regardless of how favorable everything else looks.
+    //
+    // =========================================================================
+
+    AIH.Personality.getDecisiveness = function() {
+
+        var courage;
+        var confidence;
+        var sociability;
+        var caution;
+        var confidenceFactor;
+        var socialFactor;
+        var riskFactor;
+
+        courage =
+            AIH.Personality.getTrait("courage");
+
+        if (courage === null) {
+            return 0;
+        }
+
+        confidence =
+            AIH.Personality.getTrait("confidence");
+
+        if (confidence === null) {
+            confidence = 0.5;
+        }
+
+        sociability =
+            AIH.Personality.getTrait("sociability");
+
+        if (sociability === null) {
+            sociability = 0.5;
+        }
+
+        caution =
+            AIH.Personality.getTrait("caution");
+
+        if (caution === null) {
+            caution = 0.5;
+        }
+
+        confidenceFactor =
+            0.3 +
+            (confidence * 0.7);
+
+        socialFactor =
+            1 -
+            (sociability * 0.4);
+
+        riskFactor =
+            1 -
+            (caution * 0.4);
+
+        return AIH.Personality._clamp01(
+            courage *
+            confidenceFactor *
+            socialFactor *
+            riskFactor
+        );
+    };
+
+    // =========================================================================
     // GET TRAIT
     // =========================================================================
 
@@ -628,6 +733,10 @@ var AIH = AIH || {};
 
             getEffectiveAssertiveness: function() {
                 return AIH.Personality.getEffectiveAssertiveness();
+            },
+
+            getDecisiveness: function() {
+                return AIH.Personality.getDecisiveness();
             }
         }
     );
